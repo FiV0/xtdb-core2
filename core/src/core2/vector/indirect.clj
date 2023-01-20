@@ -239,6 +239,22 @@
 (defn ->indirect-vec ^core2.vector.IIndirectVector [^ValueVector in-vec, ^ints idxs]
   (IndirectVector. (->direct-vec in-vec) idxs))
 
+;; copied from types
+(defn field-with-name ^org.apache.arrow.vector.types.pojo.Field [^Field field, col-name]
+  (Field. col-name (.getFieldType field) (.getChildren field)))
+
+(defn indirect-vec->direct-vec ^core2.vector.IIndirectVector
+  [^BufferAllocator allocator ^core2.vector.IIndirectVector indirect-vec]
+  (let [direct-vec (.createVector (-> (.getField (.getVector indirect-vec))
+                                      (field-with-name (.getName indirect-vec)))
+                                  allocator)]
+    (try
+      (.copyTo indirect-vec direct-vec)
+      direct-vec
+      (catch Throwable e
+        (.close direct-vec)
+        (throw e)))))
+
 (deftype IndirectRelation [^Map cols, ^long row-count]
   IIndirectRelation
   (vectorForName [_ col-name] (.get cols col-name))
