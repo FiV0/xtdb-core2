@@ -239,21 +239,5 @@
                            :core2.log/local-directory-log {:root-path (.resolve node-dir "log")
                                                            :clock (->mock-clock)}}))
 
-(defn with-tmp-dir* [prefix f]
-  (let [dir (Files/createTempDirectory prefix (make-array FileAttribute 0))]
-    (try
-      (f dir)
-      (finally
-        (util/delete-dir dir)))))
-
-(defmacro with-tmp-dirs
-  "Usage:
-    (with-tmp-dirs #{log-dir objects-dir}
-      ...)"
-  [[dir-binding & more-bindings] & body]
-  (if dir-binding
-    `(with-tmp-dir* ~(name dir-binding)
-       (fn [~(vary-meta dir-binding assoc :tag 'java.nio.file.Path)]
-         (with-tmp-dirs #{~@more-bindings}
-           ~@body)))
-    `(do ~@body)))
+(def with-temp-dir* util/with-tmp-dir*)
+(def with-temp-dirs (var util/with-tmp-dirs))

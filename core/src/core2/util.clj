@@ -622,3 +622,22 @@
 
 (defn ->kebab-case-kw [s]
   (-> s name str/lower-case (str/replace "_" "-") keyword))
+
+(defn with-tmp-dir* [prefix f]
+  (let [dir (Files/createTempDirectory prefix (make-array FileAttribute 0))]
+    (try
+      (f dir)
+      (finally
+        (delete-dir dir)))))
+
+(defmacro with-tmp-dirs
+  "Usage:
+    (with-tmp-dirs #{log-dir objects-dir}
+      ...)"
+  [[dir-binding & more-bindings] & body]
+  (if dir-binding
+    `(with-tmp-dir* ~(name dir-binding)
+       (fn [~(vary-meta dir-binding assoc :tag 'java.nio.file.Path)]
+         (with-tmp-dirs #{~@more-bindings}
+           ~@body)))
+    `(do ~@body)))
