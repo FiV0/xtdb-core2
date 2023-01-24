@@ -459,9 +459,9 @@
                             (apply [_ col-name]
                               (->vec-writer allocator col-name col-type)))))
 
-      (rowCopier [_ in-rel]
+      (rowCopier [this in-rel]
         (let [copiers (vec (for [^IIndirectVector in-vec in-rel]
-                              (->row-copier (.get writers (.getName in-vec)) in-vec)))]
+                             (->row-copier (.writerForName this (.getName in-vec)) in-vec)))]
           (reify IRowCopier
             (copyRow [_ src-idx]
               (let [pos (.getPositionAndIncrement wp)]
