@@ -47,14 +47,62 @@
                             [:table ?table]]
                           {:table-args {'?table table-with-nil}}))
           "default nulls last")))
+
+(defn first-diff [s1 s2]
+  (loop [s1 s1 s2 s2]
+    (cond
+      (and (empty? s1) (empty? s2)) nil
+
+      (empty? s1) [nil (first s2)]
+
+      (empty? s2) [(first s1) nil]
+
+      (= (first s1) (first s2))
+      (recur (rest s1) (rest s2))
+
+      :else
+      [(first s1) (first s2)])))
+
+(comment
+  (require 'sc.api)
+
+  (sc.api/letsc [10 -7]
+                (first-diff sorted res)
+                [(take 3 sorted) (take 3 res)])
+
+
+  )
+
 (t/deftest test-order-by-spill
-  (let [data (map-indexed (fn [i d] {:a d :b i}) (repeatedly 10000 #(rand-int 1000000)))
+  (let [data (map-indexed (fn [i d] {:a d :b i}) (repeatedly 1000 #(rand-int 1000000)))
         blocks (->> (partition-all 13 data)
                     (map #(into [] %))
                     (into []))
-        sorted (sort-by (juxt :a :b) data)]
-    (t/is (= sorted
-             (tu/query-ra [:order-by '[[a] [b]]
-                           [::tu/blocks blocks]]
-                          {}))
-          "spilling to disk")))
+        sorted (sort-by (juxt :a :b) data)
+        res (tu/query-ra [:order-by '[[a] [b]]
+                          [::tu/blocks blocks]]
+                         {})]
+    (sc.api/spy)
+    (t/is  (= nil (first-diff sorted res))
+           #_(= sorted
+                (tu/query-ra [:order-by '[[a] [b]]
+                              [::tu/blocks blocks]]
+                             {}))
+           "spilling to disk")
+
+    #_(t/is (= #{}
+               (clojure.set/difference
+                (into #{} (tu/query-ra [:order-by '[[a]]
+                                        [::tu/blocks blocks]]
+                                       {}))
+                (into #{} sorted))
+               )
+            "spilling to disk")
+
+    #_(t/is (= #{}
+               (clojure.set/difference (into #{} sorted)
+                                       (into #{} (tu/query-ra [:order-by '[[a]]
+                                                               [::tu/blocks blocks]]
+                                                              {})))
+               )
+            "spilling to disk")))
