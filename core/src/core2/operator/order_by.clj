@@ -110,7 +110,7 @@
                        ^core2.vector.IIndirectRelation irel2 order-specs]
   (let [out-rel-writer (vw/->rel-writer allocator)
         ;; TODO move out for speed
-        compare-fn (mk-irel-comparator irel1 irel2 order-specs)
+        ^Comparator cmp (mk-irel-comparator irel1 irel2 order-specs)
         len1 (.rowCount irel1)
         len2 (.rowCount irel2)
         ^IRowCopier row-copier1 (.rowCopier out-rel-writer irel1)
@@ -118,13 +118,13 @@
         [idx1 idx2] (loop [idx1 0 idx2 0]
                       (cond  (or (= idx1 len1) (= idx2 len2))
                              [idx1 idx2]
-                             (neg? (compare-fn idx1 idx2))
+                             (neg? (.compare cmp idx1 idx2))
                              (do
                                (.copyRow row-copier1 idx1)
                                (recur (inc idx1) idx2))
                              :else
                              (do
-                               (.copyRow row-copier2 idx1)
+                               (.copyRow row-copier2 idx2)
                                (recur idx1 (inc idx2)))))]
     (when (< idx1 len1)
       (doseq [idx (range idx1 len1)]
@@ -144,39 +144,6 @@
                  (map (fn [[irel1 irel2]] (two-merge-irels allocator irel1 irel2 order-specs))))]
         (recur (cond-> new-irels
                  (odd? (count irels)) (conj (last irels))))))))
-
-
-(comment
-  (sc.api/letsc [7 -6]
-                ;; (.getSchema read-root)
-                (count (.getFieldVectors read-root))))
-
-(comment
-  (def baos (ByteArrayOutputStream.))
-  (write-dvec direct-vec baos)
-  (def bais (ByteArrayInputStream. (.toByteArray baos)))
-  (read-dvec buffer-allocator bais))
-
-(defn write-drel [^core2.vector.IIndirectRelation irel ^OutputStream os]
-  (let [dvecs (seq irel)
-        dos (DataOutputStream. os)]
-    (.writeInt dos (count dvecs))
-    (.flush dos)
-    (doseq [dvec (take 1 (seq irel))]
-      (write-dvec dvec os))))
-
-(defn read-drel [^BufferAllocator allocator ^InputStream is]
-  (let [dis (DataInputStream. is)
-        relation-size (.readInt dis)]
-    ;; (println relation-size)
-    (iv/->indirect-rel (repeatedly relation-size #(read-dvec allocator is)))))
-
-
-(comment
-  (def baos (ByteArrayOutputStream.))
-  (write-drel direct-rel baos)
-  (def bais (ByteArrayInputStream. (.toByteArray ^ByteArrayOutputStream baos)))
-  (read-drel buffer-allocator bais))
 
 (defn- irel->column-names [irel]
   (map :name (seq irel)))
@@ -212,28 +179,70 @@
 
   )
 
-(defn split-blocks ^core2.vector.IIndirectRelation [n ^BufferAllocator allocator ^ICursor in-cursor]
-  (loop [i 0 res [] rel-writer (vw/->rel-writer allocator)]
-    (if (.tryAdvance in-cursor
-                     (reify Consumer
-                       (accept [_ src-rel]
-                         (vw/append-rel rel-writer src-rel))))
-      (if (< i n)
-        (recur (inc i) res rel-writer)
-        (recur 0 (conj res (vw/rel-writer->reader rel-writer)) (vw/->rel-writer allocator)))
-      (if (= i 0)
-        res
-        (conj res (vw/rel-writer->reader rel-writer))))))
 
-(def ^:private block-limit 16)
+(ns-unalias *ns* 'c2)
+(require '[core2.api :as c2])
+
+
+(defn split-blocks ^core2.vector.IIndirectRelation [n ^BufferAllocator allocator ^ICursor in-cursor]
+  (let [cnt (atom 0)]
+    (loop [i 0 res [] rel-writer (vw/->rel-writer allocator)]
+      ;; (println "block cnt " (swap! cnt inc))
+      (if (.tryAdvance in-cursor
+                       (reify Consumer
+                         (accept [_ src-rel]
+                           #_(clojure.pprint/pprint (seq src-rel))
+                           (vw/append-rel rel-writer src-rel))))
+        (if (< i n)
+          (recur (inc i) res rel-writer)
+          (recur 0 (conj res (vw/rel-writer->reader rel-writer)) (vw/->rel-writer allocator)))
+        (if (= i 0)
+          res
+          (conj res (vw/rel-writer->reader rel-writer)))))))
+
+#_(do
+    (defn split-blocks ^core2.vector.IIndirectRelation [n ^BufferAllocator allocator ^ICursor in-cursor]
+      (let [cnt (atom 0)]
+        (loop [i 0 res [] rel-writer (vw/->rel-writer allocator)]
+          (println "block cnt " (swap! cnt inc))
+          (if (.tryAdvance in-cursor
+                           (reify Consumer
+                             (accept [_ src-rel]
+                               #_(clojure.pprint/pprint (seq src-rel))
+                               (vw/append-rel rel-writer src-rel))))
+            (if (< i n)
+              (recur (inc i) res rel-writer)
+              (recur 0 (conj res (vw/rel-writer->reader rel-writer)) (vw/->rel-writer allocator)))
+            (if (= i 0)
+              res
+              (conj res (vw/rel-writer->reader rel-writer)))))))
+
+
+    (with-open [node (core2.node/start-node {})]
+      (c2/submit-tx node [[:sql "INSERT INTO x(id, data) VALUES(1, 'foo')"]])
+      (def tx (c2/submit-tx node [[:sql "INSERT INTO x(id, data) VALUES(2, 'bar')"]]))
+      (c2/sql-query node "SELECT x.id, x.data FROM x ORDER BY x.data" {:basis {:tx tx}}))
+    )
+
+(def ^:private block-limit 2)
 
 (defn calculate-out-rels [^BufferAllocator allocator ^ICursor in-cursor order-specs]
   (let [out-rels (split-blocks block-limit allocator in-cursor)]
+    ;; (sc.api/spy)
     (case (count out-rels)
       0 []
       1 (let [read-rel (first out-rels)]
-          (iv/select read-rel (sorted-idxs read-rel order-specs)))
-      (sort-irels allocator out-rels order-specs))))
+          [(iv/select read-rel (sorted-idxs read-rel order-specs))])
+      [(sort-irels allocator out-rels order-specs)])))
+
+(comment
+  (require 'sc.api)
+
+  (sc.api/letsc [1 -2]
+                (let [read-rel (first out-rels)]
+                  (iv/select read-rel (sorted-idxs read-rel order-specs)))
+                )
+  )
 
 (deftype OrderByCursor [^BufferAllocator allocator
                         ^ICursor in-cursor
@@ -355,3 +364,35 @@
         ^VectorSchemaRoot read-root (.getVectorSchemaRoot reader)]
     (.loadNextBatch reader)
     (iv/->DirectVector (.getVector read-root 0) name)))
+
+(comment
+  (sc.api/letsc [7 -6]
+                ;; (.getSchema read-root)
+                (count (.getFieldVectors read-root))))
+
+(comment
+  (def baos (ByteArrayOutputStream.))
+  (write-dvec direct-vec baos)
+  (def bais (ByteArrayInputStream. (.toByteArray baos)))
+  (read-dvec buffer-allocator bais))
+
+(defn write-drel [^core2.vector.IIndirectRelation irel ^OutputStream os]
+  (let [dvecs (seq irel)
+        dos (DataOutputStream. os)]
+    (.writeInt dos (count dvecs))
+    (.flush dos)
+    (doseq [dvec (take 1 (seq irel))]
+      (write-dvec dvec os))))
+
+(defn read-drel [^BufferAllocator allocator ^InputStream is]
+  (let [dis (DataInputStream. is)
+        relation-size (.readInt dis)]
+    ;; (println relation-size)
+    (iv/->indirect-rel (repeatedly relation-size #(read-dvec allocator is)))))
+
+
+(comment
+  (def baos (ByteArrayOutputStream.))
+  (write-drel direct-rel baos)
+  (def bais (ByteArrayInputStream. (.toByteArray ^ByteArrayOutputStream baos)))
+  (read-drel buffer-allocator bais))
