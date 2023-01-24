@@ -250,7 +250,6 @@
                                   allocator)]
     (try
       (.copyTo indirect-vec direct-vec)
-      direct-vec
       (catch Throwable e
         (.close direct-vec)
         (throw e)))))
