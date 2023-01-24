@@ -239,5 +239,5 @@
                            :core2.log/local-directory-log {:root-path (.resolve node-dir "log")
                                                            :clock (->mock-clock)}}))
 
-(def with-temp-dir* util/with-tmp-dir*)
-(def with-temp-dirs (var util/with-tmp-dirs))
+(def with-tmp-dir* util/with-tmp-dir*)
+(def with-tmp-dirs (var util/with-tmp-dirs))
