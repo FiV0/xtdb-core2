@@ -47,3 +47,14 @@
                             [:table ?table]]
                           {:table-args {'?table table-with-nil}}))
           "default nulls last")))
+(t/deftest test-order-by-spill
+  (let [data (map-indexed (fn [i d] {:a d :b i}) (repeatedly 10000 #(rand-int 1000000)))
+        blocks (->> (partition-all 13 data)
+                    (map #(into [] %))
+                    (into []))
+        sorted (sort-by (juxt :a :b) data)]
+    (t/is (= sorted
+             (tu/query-ra [:order-by '[[a] [b]]
+                           [::tu/blocks blocks]]
+                          {}))
+          "spilling to disk")))
