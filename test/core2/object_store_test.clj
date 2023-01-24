@@ -2,6 +2,7 @@
   (:require [clojure.test :as t]
             [core2.object-store :as os]
             [core2.test-util :as tu]
+            [core2.util :as util]
             [juxt.clojars-mirrors.integrant.core :as ig])
   (:import core2.object_store.ObjectStore
            java.io.Closeable
@@ -70,6 +71,6 @@
     (f os)))
 
 (def-obj-store-tests fs [f]
-  (tu/with-tmp-dirs #{os-path}
+  (util/with-tmp-dirs #{os-path}
     (with-open [^Closeable os (ig/init-key ::os/file-system-object-store {:root-path os-path, :pool-size 2})]
       (f os))))

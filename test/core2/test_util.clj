@@ -238,6 +238,3 @@
   (node/start-submit-node {:core2.tx-producer/tx-producer {:clock (->mock-clock)}
                            :core2.log/local-directory-log {:root-path (.resolve node-dir "log")
                                                            :clock (->mock-clock)}}))
-
-(def with-tmp-dir* util/with-tmp-dir*)
-(def with-tmp-dirs (var util/with-tmp-dirs))
