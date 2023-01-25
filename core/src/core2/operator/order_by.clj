@@ -291,10 +291,13 @@
               file-reader (ArrowFileReader. file-ch allocator)]
     (count (.getRecordBlocks file-reader))))
 
-(defn batch->irel [^VectorSchemaRoot root]
-  (clojure.pprint/pprint (.getFieldVectors root))
-  (println (.getValueCount (first (.getFieldVectors root))))
+(defn get-irel-from-vsr [^VectorSchemaRoot root]
   (indirect/->indirect-rel (map indirect/->direct-vec (.getFieldVectors root))))
+
+(defn copy-irel-to-vsr [^IIndirectRelation irel ^VectorSchemaRoot vsr]
+  (doseq [iv irel]
+    (.copyTo iv (.getVector vsr (.getName iv))))
+  (.setRowCount vsr (.rowCount irel)))
 
 (defn load-batch ^IIndirectRelation [n ^ArrowFileReader file-reader]
   (let [blocks (.getRecordBlocks file-reader)
@@ -304,7 +307,7 @@
     (when-not (.loadRecordBatch file-reader arrow-block)
       (log/error "Unable to load batch!"))
     (println (.contentToTSVString root))
-    (batch->irel root))
+    (get-irel-from-vsr root))
   #_(with-open [file-ch (FileChannel/open (.toPath file) (into-array OpenOption #{StandardOpenOption/READ}))
                 file-reader (doto (ArrowFileReader. file-ch allocator)
                               (.initialize))]
@@ -397,6 +400,53 @@
                     (.getValueCount))))
 
 
+(defn sort-irels [^BufferAllocator allocator irel-files order-specs unique-file-fn column-order]
+  (assert (< 1 (count irel-files)))
+  (loop [irel-files irel-files]
+    (if-not (< 1 (count irel-files))
+      (first irel-files)
+      (let [new-irels-files
+            (->> (partition 2 irel-files)
+                 (map (fn [[f1 f2]]
+                        (let [^core2.vector.IIndirectRelation irel1 (read-irel allocator f1 column-order)
+                              ^core2.vector.IIndirectRelation irel2 (read-irel allocator f2 column-order)
+                              ^core2.vector.IIndirectRelation out-irel (two-merge-irels allocator irel1 irel2 order-specs)
+                              new-irel-file (write-irel out-irel (unique-file-fn) column-order)]
+                          (.close irel1)
+                          (.close irel2)
+                          (.close out-irel)
+                          (util/delete-file (.toPath f1))
+                          (util/delete-file (.toPath f2))
+                          new-irel-file))))]
+        (recur (cond-> new-irels-files
+                 (odd? (count irel-files)) (conj (last irel-files))))))))
+
+(defn sort-batches [[file1 file2] allocator order-specs col-types]
+  (let [schema (col-types->schema col-types)]
+    (loop [file1 file1 file2 file2]
+      (let [batches (number-of-batches allocator file1)]
+        (if (<= (count batches) 1)
+          file1
+          (do
+            (with-open [file-reader (open-file-reader allocator file1)
+                        os (io/output-stream file2)
+                        write-root (VectorSchemaRoot/create schema allocator)
+                        file-writer (ArrowFileWriter. write-root nil (Channels/newChannel os))]
+              (doseq [[i1 i2] (partition 2 (range batches))]
+                (with-open [irel1 (load-batch i1 file-reader)
+                            irel2 (load-batch i2 file-reader)
+                            out-irel (get-irel-from-vsr write-root)]
+                  (two-merge-irels allocator irel1 irel2)
+                  )
+                )
+
+              )
+            (util/delete-file file1)
+            (recur file2 file1))))))
+
+  )
+
+
 (deftype OrderByCursor [^BufferAllocator allocator
                         ^ICursor in-cursor
                         col-types
@@ -415,7 +465,8 @@
         (let [file1 (io/file (.getPath (.toUri sort-dir)) "tmp_order_by1.arrow")
               file2 (io/file (.getPath (.toUri sort-dir)) "tmp_order_by1.arrow")
               _ (io/make-parents file1)
-              _ (accumulate-relations allocator in-cursor file1 order-specs col-types)]
+              _ (accumulate-relations allocator in-cursor file1 order-specs col-types)
+              sorted-file (sort-batches [file1 file2] allocator order-specs col-types)]
           (with-open [file-reader (open-file-reader allocator file1)
                       out-rel (load-batch 0 file-reader)]
             (set! (.done this) true)
