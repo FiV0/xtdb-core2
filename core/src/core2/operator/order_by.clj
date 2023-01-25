@@ -1,25 +1,35 @@
 (ns core2.operator.order-by
   (:require [clojure.java.io :as io]
             [clojure.spec.alpha :as s]
+            [clojure.tools.logging :as log]
             [core2.expression.comparator :as expr.comp]
             [core2.logical-plan :as lp]
+            [core2.types :as types]
             [core2.util :as util]
             [core2.vector.indirect :as iv]
-            [core2.vector.writer :as vw]
-            [core2.vector.indirect :as indirect])
+            [core2.vector.indirect :as indirect]
+            [core2.vector.writer :as vw])
   (:import core2.ICursor
            (core2.vector IIndirectVector IIndirectRelation IRowCopier)
            (core2.vector.indirect DirectVector IndirectVector)
            (java.io InputStream OutputStream ObjectOutputStream ObjectInputStream DataInputStream DataOutputStream
                     ByteArrayInputStream ByteArrayOutputStream)
+           java.io.File
+           java.nio.ByteBuffer
+           ;; (org.apache.arrow.vector.util DecimalUtility)
+           (java.nio.channels Channels)
+           java.nio.channels.FileChannel
+           [java.nio.file OpenOption StandardOpenOption]
            (java.util Arrays Comparator)
            (java.util.function Consumer ToIntFunction)
            java.util.stream.IntStream
            (org.apache.arrow.memory BufferAllocator)
-           ;; (org.apache.arrow.vector.util DecimalUtility)
-           (java.nio.channels Channels)
+           org.apache.arrow.memory.RootAllocator
            (org.apache.arrow.vector ValueVector BigIntVector VectorLoader VectorSchemaRoot)
-           (org.apache.arrow.vector.ipc ArrowFileWriter ArrowStreamWriter ArrowWriter ArrowStreamReader)))
+           org.apache.arrow.vector.VectorSchemaRoot
+           (org.apache.arrow.vector.ipc ArrowFileWriter ArrowStreamWriter ArrowWriter ArrowStreamReader)
+           [org.apache.arrow.vector.ipc ArrowFileReader ArrowStreamReader JsonFileWriter]
+           (org.apache.arrow.vector.types.pojo Schema)))
 
 (comment
   (require 'sc.api))
@@ -173,18 +183,7 @@
 (def ^:private block-threshold 16)
 (def ^:private spill-threshold 200000)
 
-(defn- accumulate-relations ^core2.vector.IIndirectRelation [allocator ^ICursor in-cursor]
-  (let [rel-writer (vw/->rel-writer allocator)]
-    (try
-      (.forEachRemaining in-cursor
-                         (reify Consumer
-                           (accept [_ src-rel]
-                             (vw/append-rel rel-writer src-rel))))
-      (catch Exception e
-        (.close rel-writer)
-        (throw e)))
 
-    (vw/rel-writer->reader rel-writer)))
 
 
 
@@ -271,50 +270,171 @@
     (let [file-fn (unique-irel-file-fn sort-dir)]
       [(file-fn) (file-fn)])))
 
-(defn calculate-out-rels [^BufferAllocator allocator ^ICursor in-cursor order-specs]
-  (let [[^IIndirectRelation first-rel continue?] (take-blocks block-threshold allocator in-cursor)]
-    (if-not continue?
-      [(iv/select first-rel (sorted-idxs first-rel order-specs))]
-      (util/with-tmp-dirs #{sort-dir}
-        (let [unique-file-fn (unique-irel-file-fn sort-dir)
-              column-order (irel->column-names first-rel)
-              first-irel-file (write-irel first-rel (unique-file-fn) column-order)
-              irel-files (into [first-irel-file] (split-blocks block-threshold allocator in-cursor
-                                                               unique-file-fn column-order order-specs))]
-          (.close first-rel)
-          [(read-irel allocator (sort-irels allocator irel-files order-specs unique-file-fn column-order) column-order)])))))
+#_(defn calculate-out-rels [^BufferAllocator allocator ^ICursor in-cursor order-specs]
+   (let [[^IIndirectRelation first-rel continue?] (take-blocks block-threshold allocator in-cursor)]
+     (if-not continue?
+       [(iv/select first-rel (sorted-idxs first-rel order-specs))]
+       (util/with-tmp-dirs #{sort-dir}
+         (let [file1 (io/file (.getPath (.toUri sort-dir)) "tmp_order_by1.arrow")
+               file2 (io/file (.getPath (.toUri sort-dir)) "tmp_order_by1.arrow")
+               column-order (irel->column-names first-rel)
+               first-irel-file (write-irel first-rel (unique-file-fn) column-order)
+               irel-files (into [first-irel-file] (split-blocks block-threshold allocator in-cursor
+                                                                unique-file-fn column-order order-specs))]
+           (.close first-rel)
+           [(read-irel allocator (sort-irels allocator irel-files order-specs unique-file-fn column-order) column-order)])))))
+
+
+(defn number-of-batches [^BufferAllocator allocator file]
+  (with-open [file-ch (FileChannel/open (.toPath file)
+                                        (into-array OpenOption #{StandardOpenOption/READ}))
+              file-reader (ArrowFileReader. file-ch allocator)]
+    (count (.getRecordBlocks file-reader))))
+
+(defn batch->irel [^VectorSchemaRoot root]
+  (clojure.pprint/pprint (.getFieldVectors root))
+  (println (.getValueCount (first (.getFieldVectors root))))
+  (indirect/->indirect-rel (map indirect/->direct-vec (.getFieldVectors root))))
+
+(defn load-batch ^IIndirectRelation [n ^ArrowFileReader file-reader]
+  (let [blocks (.getRecordBlocks file-reader)
+        _ (println (count blocks))
+        arrow-block (nth blocks n)
+        root (.getVectorSchemaRoot file-reader)]
+    (when-not (.loadRecordBatch file-reader arrow-block)
+      (log/error "Unable to load batch!"))
+    (println (.contentToTSVString root))
+    (batch->irel root))
+  #_(with-open [file-ch (FileChannel/open (.toPath file) (into-array OpenOption #{StandardOpenOption/READ}))
+                file-reader (doto (ArrowFileReader. file-ch allocator)
+                              (.initialize))]
+      (let [blocks (.getRecordBlocks file-reader)
+            _ (println (count blocks))
+            arrow-block (nth blocks n)
+            root (.getVectorSchemaRoot file-reader)]
+        (when-not (.loadRecordBatch file-reader arrow-block)
+          (log/error "Unable to load batch!"))
+        (println (.contentToTSVString root))
+        (batch->irel root))))
+
+(comment
+  (load-batch 2  (io/file "/tmp/arrow/order-by2.arrow"))
+
+
+  )
+
+(defn open-file-reader [^BufferAllocator allocator file]
+  (let [file-ch (FileChannel/open (.toPath file) (into-array OpenOption #{StandardOpenOption/READ}))]
+    (doto (ArrowFileReader. file-ch allocator)
+      (.initialize))))
+
+(defn col-types->schema [col-types]
+  (Schema. (map (fn [[cn ct]] (types/col-type->field cn ct)) col-types)))
+
+(defn- accumulate-relations ^core2.vector.IIndirectRelation
+  [^BufferAllocator allocator ^ICursor in-cursor file order-specs col-types]
+  (let [schema (col-types->schema col-types)]
+    (with-open [os (io/output-stream file)
+                write-root (VectorSchemaRoot/create schema allocator)
+                writer (ArrowFileWriter. write-root nil (Channels/newChannel os))]
+      (.start writer)
+      (.forEachRemaining in-cursor
+                         (reify Consumer
+                           (accept [_ src-rel]
+                             (with-open [out-rel (iv/select src-rel (sorted-idxs src-rel order-specs))]
+                               (doseq [iv out-rel]
+                                 (.copyTo iv (.getVector write-root (.getName iv))))
+                               (.setRowCount write-root (.rowCount src-rel))
+                               (.writeBatch writer))
+                             #_(doseq [iv src-rel]
+                                 (.copyTo iv (.getVector write-root (.getName iv))))
+                             #_(.writeBatch writer)
+                             #_(println (.contentToTSVString write-root))
+                             #_(->> (seq src-rel)
+                                    (map (fn [iv] )))
+
+                             #_(vw/append-rel rel-writer src-rel))))
+      (.end writer)
+      #_(clojure.pprint/pprint (.getSchema write-root)))
+    #_(load-batch 2 allocator (io/file "/tmp/arrow/order-by2.arrow"))
+
+
+    #_(try
+        (.forEachRemaining in-cursor
+                           (reify Consumer
+                             (accept [_ src-rel]
+                               (vw/append-rel rel-writer src-rel))))
+        (catch Exception e
+          (.close rel-writer)
+          (throw e)))
+
+    #_(vw/rel-writer->reader rel-writer)))
+
+#_(defn write-arrow-json-files
+    ([^File arrow-dir]
+     (write-arrow-json-files arrow-dir #".*"))
+    ([^File arrow-dir file-pattern]
+     (
+      (doseq [^File file (.listFiles arrow-dir)
+              :when (and (.endsWith (.getName file) ".arrow") (re-matches file-pattern (.getName file)))]
+        (with-open [file-ch (FileChannel/open (.toPath file)
+                                              (into-array OpenOption #{StandardOpenOption/READ}))
+                    file-reader (ArrowFileReader. file-ch allocator)
+                    file-writer (JsonFileWriter. (file->json-file file)
+                                                 (.. (JsonFileWriter/config) (pretty true)))]
+          (let [root (.getVectorSchemaRoot file-reader)]
+            (.start file-writer (.getSchema root) nil)
+            (while (.loadNextBatch file-reader)
+              (.write file-writer root))))))))
+
+(comment
+  (require 'sc.api)
+
+  (sc.api/letsc [1 -2]
+                (-> (seq out-rel)
+                    first
+                    :v
+                    (.getValueCount))))
+
 
 (deftype OrderByCursor [^BufferAllocator allocator
                         ^ICursor in-cursor
+                        col-types
                         order-specs
-                        ^:unsynchronized-mutable ^boolean consumed?
-                        ^:unsynchronized-mutable out-rels]
+                        ^:unsynchronized-mutable done
+                        ;; ^:unsynchronized-mutable sorted-file
+                        ;; ^:unsynchronized-mutable batch-nb
+                        ;; ^:unsynchronized-mutable ^boolean consumed?
+                        ;; ^:unsynchronized-mutable out-rels
+                        ]
   ICursor
-  #_(tryAdvance [_ c]
-      (with-open [read-rel (accumulate-relations allocator in-cursor)]
-        (if (pos? (.rowCount read-rel))
-          (with-open [out-rel (iv/select read-rel (sorted-idxs read-rel order-specs))]
-            (.accept c out-rel)
-            true)
-          false)))
   (tryAdvance [this c]
-    (cond consumed? false
-
-          out-rels
-          (if-let [^core2.vector.IIndirectRelation out-rel (first out-rels)]
-            (try
-              (set! (.out-rels this) (lazy-seq (next out-rels)))
-              (.accept c out-rel)
-              true
-              (finally
-                (.close out-rel)))
-            (do
-              (set! (.out-rels this) nil)
-              (set! (.consumed? this) true)
+    (if (.done this)
+      false
+      (util/with-tmp-dirs #{sort-dir}
+        (let [file1 (io/file (.getPath (.toUri sort-dir)) "tmp_order_by1.arrow")
+              file2 (io/file (.getPath (.toUri sort-dir)) "tmp_order_by1.arrow")
+              _ (io/make-parents file1)
+              _ (accumulate-relations allocator in-cursor file1 order-specs col-types)]
+          (with-open [file-reader (open-file-reader allocator file1)
+                      out-rel (load-batch 0 file-reader)]
+            (set! (.done this) true)
+            (if (pos? (.rowCount out-rel))
+              (do
+                (.accept c out-rel)
+                true)
               false))
+          #_(with-open [read-rel (accumulate-relations allocator in-cursor col-types)]
+              (if (pos? (.rowCount read-rel))
+                (with-open [out-rel (iv/select read-rel (sorted-idxs read-rel order-specs))]
+                  (.accept c out-rel)
+                  true)
+                false))))))
+  #_(tryAdvance [this c]
 
-          :else
-          (let [out-rels (calculate-out-rels allocator in-cursor order-specs)]
+      (cond consumed? false
+
+            out-rels
             (if-let [^core2.vector.IIndirectRelation out-rel (first out-rels)]
               (try
                 (set! (.out-rels this) (lazy-seq (next out-rels)))
@@ -325,7 +445,21 @@
               (do
                 (set! (.out-rels this) nil)
                 (set! (.consumed? this) true)
-                false)))))
+                false))
+
+            :else
+            (let [out-rels (calculate-out-rels allocator in-cursor order-specs)]
+              (if-let [^core2.vector.IIndirectRelation out-rel (first out-rels)]
+                (try
+                  (set! (.out-rels this) (lazy-seq (next out-rels)))
+                  (.accept c out-rel)
+                  true
+                  (finally
+                    (.close out-rel)))
+                (do
+                  (set! (.out-rels this) nil)
+                  (set! (.consumed? this) true)
+                  false)))))
 
   (close [_]
     (util/try-close in-cursor)))
@@ -335,104 +469,4 @@
       (fn [col-types]
         {:col-types col-types
          :->cursor (fn [{:keys [allocator]} in-cursor]
-                     (OrderByCursor. allocator in-cursor order-specs false nil))})))
-
-;; to remove
-
-(defn test-lazy-seq [n]
-  (if (zero? n)
-    '()
-    (lazy-seq (println n) (cons n (test-lazy-seq (dec n))))))
-
-(comment
-  (def t (test-lazy-seq 10))
-
-  (def t2 (next t))
-  )
-
-(defn- write-object [o file]
-  (with-open [os (ObjectOutputStream. (io/output-stream file))]
-    (.writeObject os o)
-    (.flush os)))
-
-(defn- read-object [file]
-  (with-open [is (ObjectInputStream. (io/input-stream file))]
-    (.readObject is)))
-
-(comment
-  (def buffer-allocator (sc.api/letsc [1 -1] allocator))
-  (def direct-vec (sc.api/letsc [1 -1] (-> (seq read-rel) first)))
-  (def direct-vec (sc.api/letsc [1 -1] (-> (seq read-rel) second)))
-
-  (=
-   (-> direct-vec :v (.getField) (.getName))
-   (-> direct-vec :name))
-
-  (def direct-rel (sc.api/letsc [1 -1] read-rel))
-
-  (sc.api/letsc [1 -1]
-                read-rel
-                ;; (sorted-idxs read-rel order-specs)
-                ;; (.rowCount read-rel)
-                #_order-specs
-                #_(-> (seq read-rel)
-                      first
-                      ;; :v
-                      ;; (.getFieldBuffers)
-                      #_(.getBuffers))))
-
-(defn write-dvec [^core2.vector.IIndirectVector ivec ^OutputStream os]
-  (let [v (.getVector ivec)
-        name (.getName ivec)
-        root (VectorSchemaRoot. [(.getField v)] [v])
-        writer (ArrowStreamWriter. root nil (Channels/newChannel os))
-        dos (DataOutputStream. os)]
-    (.writeInt dos (count (.getBytes name)))
-    (.write dos (.getBytes name))
-    (.flush dos)
-    (.start writer)
-    (.writeBatch writer)
-    (.end writer)))
-
-(defn read-dvec [^BufferAllocator allocator ^InputStream is]
-  (let [dis (DataInputStream. is)
-        name-length (.readInt dis)
-        ba (byte-array name-length)
-        _ (.read dis ba 0 name-length)
-        name (String. ba)
-        reader (ArrowStreamReader. is allocator)
-        ^VectorSchemaRoot read-root (.getVectorSchemaRoot reader)]
-    (.loadNextBatch reader)
-    (iv/->DirectVector (.getVector read-root 0) name)))
-
-(comment
-  (sc.api/letsc [7 -6]
-                ;; (.getSchema read-root)
-                (count (.getFieldVectors read-root))))
-
-(comment
-  (def baos (ByteArrayOutputStream.))
-  (write-dvec direct-vec baos)
-  (def bais (ByteArrayInputStream. (.toByteArray baos)))
-  (read-dvec buffer-allocator bais))
-
-(defn write-drel [^core2.vector.IIndirectRelation irel ^OutputStream os]
-  (let [dvecs (seq irel)
-        dos (DataOutputStream. os)]
-    (.writeInt dos (count dvecs))
-    (.flush dos)
-    (doseq [dvec (take 1 (seq irel))]
-      (write-dvec dvec os))))
-
-(defn read-drel [^BufferAllocator allocator ^InputStream is]
-  (let [dis (DataInputStream. is)
-        relation-size (.readInt dis)]
-    ;; (println relation-size)
-    (iv/->indirect-rel (repeatedly relation-size #(read-dvec allocator is)))))
-
-
-(comment
-  (def baos (ByteArrayOutputStream.))
-  (write-drel direct-rel baos)
-  (def bais (ByteArrayInputStream. (.toByteArray ^ByteArrayOutputStream baos)))
-  (read-drel buffer-allocator bais))
+                     (OrderByCursor. allocator in-cursor col-types order-specs false))})))
