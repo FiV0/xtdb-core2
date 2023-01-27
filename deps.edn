@@ -33,7 +33,8 @@
 
         ;; bench
         io.micrometer/micrometer-core {:mvn/version "1.9.5"}
-        com.github.oshi/oshi-core {:mvn/version "6.3.0"}}
+        com.github.oshi/oshi-core {:mvn/version "6.3.0"}
+        pro.juxt.clojars-mirrors.hiccup/hiccup {:mvn/version "2.0.0-alpha2"}}
 
  :paths ["dev"
          "dev-resources"
