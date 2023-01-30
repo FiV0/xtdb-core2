@@ -32,7 +32,8 @@
 
 (defn generate-user [worker]
   (let [u_id (b2/increment worker user-id)]
-    {:xt/id u_id
+    {:id u_id
+     :_table :user
      :u_id u_id
      :u_r_id (b2/sample-flat worker region-id)
      :u_rating 0
@@ -243,7 +244,7 @@
                   :in [[?gag-id ...] [?gav-id ...]]
                   :where [[?gag-id :_table :global-attribute-group]
                           [?gag-id :gag_name ?gag-name]
-                          [?gav_id :_table :global-attribute-value]
+                          [?gav-id :_table :global-attribute-value]
                           [?gav-id :gav_gag_id ?gag-id]
                           [?gav-id :gav_name ?gav-name]]}]
           (->> (c2/datalog-query (:sut worker) q gag-ids gav-ids)
@@ -377,8 +378,12 @@
             #_(pull ?i [:i_id, :i_u_id, :i_initial_price, :i_current_price])
             :in [?iid]
             :where [[?i :_table :item]
+                    [?i :i_id i_id]
                     [?i :i_id ?iid]
-                    [?i :i_status 0]]}]
+                    [?i :i_status 0]
+                    [?i :i_u_id i_u_id]
+                    [?i :i_initial_price i_initial_price]
+                    [?i :i_current_price i_current_price]]}]
     (c2/datalog-query sut q i_id)))
 
 (defn read-category-tsv []
