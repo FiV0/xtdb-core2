@@ -305,7 +305,7 @@
           ending-soon (ArrayList.)
           waiting-for-purchase (ArrayList.)
           closed (ArrayList.)]
-      (doseq [[i_id i_u_id i_status ^Instant i_end_date i_num_bids] (iterator-seq items)
+      (doseq [{:keys [i_id i_u_id i_status ^Instant i_end_date i_num_bids]} items
               :let [projected-status (project-item-status i_status i_end_date i_num_bids now)
 
                     ^ArrayList alist
