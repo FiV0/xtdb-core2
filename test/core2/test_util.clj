@@ -202,8 +202,8 @@
                                              max-rows-per-block max-rows-per-chunk]
                                       :or {buffers-dir "buffers"}}]
   (node/start-node {:core2.log/local-directory-log {:root-path (.resolve node-dir "log")
-                                                    :instant-src (->mock-clock)}
-                    :core2.tx-producer/tx-producer {:instant-src (->mock-clock)}
+                                                    #_#_:instant-src (or mock-clock (->mock-clock))}
+                    :core2.tx-producer/tx-producer {#_#_:instant-src (or mock-clock (->mock-clock))}
                     :core2.buffer-pool/buffer-pool {:cache-path (.resolve node-dir buffers-dir)}
                     :core2.object-store/file-system-object-store {:root-path (.resolve node-dir "objects")}
                     :core2/row-counts (->> {:max-rows-per-block max-rows-per-block

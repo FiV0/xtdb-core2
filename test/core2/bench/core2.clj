@@ -1,7 +1,19 @@
 (ns core2.bench.core2
-  (:require [core2.api :as c2]
-            [core2.bench :as b]
-            [core2.test-util :as tu]))
+  (:require
+   [clojure.java.io :as io]
+   [clojure.tools.logging :as log]
+   [core2.api :as c2]
+   [core2.bench :as b]
+   [core2.bench.measurement :as bm]
+   [core2.node :as node]
+   [core2.test-util :as tu])
+  (:import
+   (io.micrometer.core.instrument MeterRegistry Tag Timer)
+   (java.io Closeable File)
+   (java.time Clock Duration)
+   (java.util Random)
+   (java.util.concurrent ConcurrentHashMap Executors)
+   (java.util.concurrent.atomic AtomicLong)))
 
 (set! *warn-on-reflection* false)
 
@@ -26,6 +38,137 @@
             last
             deref)))))
 
+(defn install-proxy-node-meters!
+  [^MeterRegistry meter-reg]
+  (let [timer #(-> (Timer/builder %)
+                   (.minimumExpectedValue (Duration/ofNanos 1))
+                   (.maximumExpectedValue (Duration/ofMinutes 2))
+                   (.publishPercentiles (double-array bm/percentiles))
+                   (.register meter-reg))]
+    {:submit-tx-timer (timer "node.submit-tx")
+     :query-timer (timer "node.query")}))
+
+(defmacro reify-protocols-accepting-non-methods
+  "On older versions of XT node methods may be missing."
+  [& reify-def]
+  `(reify ~@(loop [proto nil
+                   forms reify-def
+                   acc []]
+              (if-some [form (first forms)]
+                (cond
+                  (symbol? form)
+                  (if (class? (resolve form))
+                    (recur nil (rest forms) (conj acc form))
+                    (recur form (rest forms) (conj acc form)))
+
+                  (nil? proto)
+                  (recur nil (rest forms) (conj acc form))
+
+                  (list? form)
+                  (if-some [{:keys [arglists]} (get (:sigs @(resolve proto)) (keyword (name (first form))))]
+                    ;; arity-match
+                    (if (some #(= (count %) (count (second form))) arglists)
+                      (recur proto (rest forms) (conj acc form))
+                      (recur proto (rest forms) acc))
+                    (recur proto (rest forms) acc)))
+                acc))))
+
+(comment
+  (require 'sc.api)
+
+  )
+
+(defn bench-proxy ^Closeable [node ^MeterRegistry meter-reg]
+  (let [last-submitted (atom nil)
+        last-completed (atom nil)
+
+        submit-counter (AtomicLong.)
+        indexed-counter (AtomicLong.)
+
+        _
+        (doto meter-reg
+          #_(.gauge "node.tx" ^Iterable [(Tag/of "event" "submitted")] submit-counter)
+          #_(.gauge "node.tx" ^Iterable [(Tag/of "event" "indexed")] indexed-counter))
+
+
+        fn-gauge (partial bm/new-fn-gauge meter-reg)
+
+        ;; on-indexed
+        ;; (fn [{:keys [submitted-tx, doc-ids, av-count, bytes-indexed] :as event}]
+        ;;   (reset! last-completed submitted-tx)
+        ;;   (.getAndIncrement indexed-counter)
+        ;;   nil)
+
+        compute-lag-nanos #_(partial compute-nanos node last-completed last-submitted)
+        (fn []
+          (let [{:keys [latest-completed-tx] :as res} (c2/status node)]
+            (or
+             (when-some [[fut ms] @last-submitted]
+               (let [tx-id (:tx-id @fut)]
+                 (when-some [{completed-tx-id :tx-id
+                              completed-tx-time :sys-time} latest-completed-tx]
+                   (when (< completed-tx-id tx-id)
+                     (* (long 1e6) (- ms (inst-ms completed-tx-time)))))))
+             0)))
+
+        compute-lag-abs
+        (fn []
+          (let [{:keys [latest-completed-tx] :as res} (c2/status node)]
+            (or
+             (when-some [[fut _] @last-submitted]
+               (let [tx-id (:tx-id @fut)]
+                 (when-some [{completed-tx-id :tx-id} latest-completed-tx ]
+                   (- tx-id completed-tx-id))))
+             0)))]
+
+
+    (fn-gauge "node.tx.lag seconds" (comp #(/ % 1e9) compute-lag-nanos) {:unit "seconds"})
+    (fn-gauge "node.tx.lag tx-id" compute-lag-abs )
+
+    (reify
+      c2/PClient
+      (-open-datalog-async [_ query args] (c2/-open-datalog-async node query args))
+      (-open-sql-async [_ query query-opts] (c2/-open-sql-async node query query-opts))
+
+      node/PNode
+      (snapshot-async [_] (node/snapshot-async node))
+      (snapshot-async [_ tx] (node/snapshot-async node tx))
+      (snapshot-async [_ tx timeout] (node/snapshot-async node tx timeout))
+
+      c2/PStatus
+      (status [_]  #_(c2/status node)
+              (let [{:keys [latest-completed-tx] :as res} (c2/status node)]
+                (reset! last-completed latest-completed-tx)
+                res))
+
+      c2/PSubmitNode
+      (submit-tx [_ tx-ops] #_(c2/submit-tx node tx-ops)
+                 (let [ret (c2/submit-tx node tx-ops)]
+                   (reset! last-submitted [ret (System/currentTimeMillis)])
+                   ;; (.incrementAndGet submit-counter)
+                   ret))
+      (submit-tx [_ tx-ops opts] #_(c2/submit-tx node tx-ops opts)
+                 (let [ret (c2/submit-tx node tx-ops opts)]
+                   (reset! last-submitted [ret (System/currentTimeMillis)])
+                   ;; (.incrementAndGet submit-counter)
+                   ret))
+
+      Closeable
+      ;; o/w some stage closes the node for later stages
+      (close [_] nil #_(.close node)))))
+
+(defn wrap-task [task f]
+  (let [{:keys [stage]} task]
+    (bm/wrap-task
+     task
+     (if stage
+       (fn instrumented-stage [worker]
+         (if bm/*stage-reg*
+           (with-open [node-proxy (bench-proxy (:sut worker) bm/*stage-reg*)]
+             (f (assoc worker :sut node-proxy)))
+           (f worker)))
+       f))))
+
 (defn run-benchmark
   [{:keys [node-opts
            benchmark-type
@@ -39,46 +182,68 @@
           #_#_:trace (trace benchmark-opts))
         benchmark-fn (b/compile-benchmark
                       benchmark
-                      (fn [_task f] f)
-                      #_(let [rocks-wrap (xtdb.bench2.rocksdb/stage-wrapper
-                                          (fn [_]
-                                            *rocks-stats-cubby-hole*))]
-                          (fn [task f]
-                            (-> (wrap-task task f)
-                                (cond->> (:stage task) (rocks-wrap task))))))]
+                      ;; @(requiring-resolve `core2.bench.measurement/wrap-task)
+                      (fn [task f] (wrap-task task f)))]
 
     (with-open [node (tu/->local-node node-opts)]
-      (benchmark-fn node))
-    #_(binding [*rocks-stats-cubby-hole* {}]
-        (with-open [node (xt/start-node (undata-node-opts node-opts))]
-          (benchmark-fn node)))))
+      (benchmark-fn node))))
 
+(defn delete-directory-recursive
+  "Recursively delete a directory."
+  [^java.io.File file]
+  (when (.isDirectory file)
+    (run! delete-directory-recursive (.listFiles file)))
+  (io/delete-file file))
 
 (comment
   ;; ======
   ;; Running in process
   ;; ======
 
+  (require 'dev
+           '[core2.api :as c2])
+
+  (do
+    (dev/halt)
+    (dev/go)
+    (c2/status dev/node)
+    )
+
+  (def run-duration "PT5S")
   (def run-duration "PT10S")
   (def run-duration "PT2M")
   (def run-duration "PT10M")
 
-  (require '[clojure.java.io :as io])
-
-  (defn delete-directory-recursive
-    "Recursively delete a directory."
-    [^java.io.File file]
-    (when (.isDirectory file)
-      (run! delete-directory-recursive (.listFiles file)))
-    (io/delete-file file))
 
   (delete-directory-recursive (io/file "dev/dev-node"))
-
   (def report-core2
     (run-benchmark
      {:node-opts {:node-dir (.toPath (io/file "dev/dev-node"))}
       :benchmark-type :auctionmark
-      :benchmark-opts {:duration run-duration}}))
+      :benchmark-opts {:duration run-duration :sync true
+                       :scale-factor 0.1 :threads 8}}))
+
+  (->> report-core2-1 :metrics (filter #(clojure.string/starts-with? (:id %) "node" )))
+
+  (def report-rocks (clojure.edn/read-string (slurp (io/file "../xtdb/core1-rocks-10s.edn"))))
+
+  (require 'core2.bench.report)
+  (core2.bench.report/show-html-report
+   (core2.bench.report/vs
+    "core2"
+    report-core2-1))
+
+  (core2.bench.report/show-html-report
+   (core2.bench.report/vs
+    "core2"
+    report-core2-1
+    "rocks"
+    report-rocks))
+
+  (spit (io/file "core2-10s.edn") report-core2)
+  (def report-slurped (clojure.edn/read-string (slurp (io/file "core2-10s.edn"))))
+  (keys report-slurped)
+
 
   (tu/with-tmp-dirs #{node-dir}
     (def report1-rocks
@@ -93,11 +258,6 @@
       :benchmark-type :auctionmark
       :benchmark-opts {:duration run-duration}}))
 
-  (require 'core2.bench.report)
-  (core2.bench.report/show-html-report
-   (core2.bench.report/vs
-    "core2"
-    report-core2))
 
   (def report1-lmdb
     (run-benchmark
