@@ -8,6 +8,7 @@
    [core2.node :as node]
    [core2.test-util :as tu])
   (:import
+   (java.nio.file Path)
    (io.micrometer.core.instrument MeterRegistry Tag Timer)
    (java.io Closeable File)
    (java.time Clock Duration)
@@ -19,7 +20,8 @@
 
 (defn install-tx-fns [worker fns]
   (->> (for [[id fn-def] fns]
-         [:put {:id id, :fn #c2/clj-form fn-def}])
+         (do (assert (instance? core2.api.ClojureForm  fn-def))
+             [:put {:id id, :fn fn-def}]))
        (c2/submit-tx (:sut worker))))
 
 (defn generate
@@ -195,30 +197,48 @@
     (run! delete-directory-recursive (.listFiles file)))
   (io/delete-file file))
 
+(defn node-dir->config [^File node-dir]
+  (let [^Path path (.toPath node-dir)]
+    {:core2.log/local-directory-log {:root-path (.resolve path "log")}
+     :core2.tx-producer/tx-producer {}
+     :core2.buffer-pool/buffer-pool {:cache-path (.resolve path "buffers")}
+     :core2.object-store/file-system-object-store {:root-path (.resolve path "objects")}
+     :core2/row-counts {}}))
+
+(defn- ->worker [node]
+  (let [clock (Clock/systemUTC)
+        domain-state (ConcurrentHashMap.)
+        custom-state (ConcurrentHashMap.)
+        root-random (Random. 112)
+        reports (atom [])
+        worker (b/->Worker node root-random domain-state custom-state clock reports)]
+    worker))
+
+
 (comment
   ;; ======
   ;; Running in process
   ;; ======
 
   (require 'dev
-           '[core2.api :as c2])
+           '[core2.api :as c2]
+           '[core2.node :as node])
 
   (do
     (dev/halt)
     (dev/go)
-    (c2/status dev/node)
-    )
+    (c2/status dev/node))
 
   (def run-duration "PT5S")
   (def run-duration "PT10S")
   (def run-duration "PT2M")
   (def run-duration "PT10M")
 
+  (delete-directory-recursive (io/file "dev/dev-node2"))
 
-  (delete-directory-recursive (io/file "dev/dev-node"))
   (def report-core2
     (run-benchmark
-     {:node-opts {:node-dir (.toPath (io/file "dev/dev-node"))}
+     {:node-opts {:node-dir (.toPath (io/file "dev/dev-node2"))}
       :benchmark-type :auctionmark
       :benchmark-opts {:duration run-duration :sync true
                        :scale-factor 0.1 :threads 8}}))
@@ -231,14 +251,14 @@
   (core2.bench.report/show-html-report
    (core2.bench.report/vs
     "core2"
-    report-core2-1))
+    report-core2))
 
   (core2.bench.report/show-html-report
    (core2.bench.report/vs
     "core2"
-    report-core2-1
+    report-core2-2m
     "rocks"
-    report-rocks))
+    report-rocks-2m))
 
   (spit (io/file "core2-10s.edn") report-core2)
   (def report-slurped (clojure.edn/read-string (slurp (io/file "core2-10s.edn"))))
