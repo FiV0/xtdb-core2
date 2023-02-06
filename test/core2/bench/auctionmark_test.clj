@@ -179,69 +179,75 @@
                                                              [imb :imb_i_id imb_i_id]]} )))))))))
 
 
-#_(t/deftest proc-new-item-test
-    (with-redefs [am/sample-status (constantly :open)]
-      (let [worker (->worker *node**)]
-        (t/testing "new bid"
-          (bcore2/install-tx-fns worker {:apply-seller-fee am/tx-fn-apply-seller-fee, :new-bid am/tx-fn-new-bid})
-          (bcore2/generate worker am/generate-user 1)
-          (am/load-categories-tsv worker)
-          (bcore2/generate worker am/generate-category 10)
-          (bcore2/generate worker am/generate-global-attribute-group 10)
-          (bcore2/generate worker am/generate-global-attribute-value 100)
-          (am/proc-new-item worker)
-          (xt/sync *node**)
+(t/deftest proc-new-item-test
+  (with-redefs [am/sample-status (constantly :open)]
+    (let [worker (->worker *node*)]
+      (t/testing "new item"
+        (let [tx (do
+                   (bcore2/install-tx-fns worker {:apply-seller-fee am/tx-fn-apply-seller-fee, :new-bid am/tx-fn-new-bid})
+                   (bcore2/generate worker am/generate-user 1)
+                   (am/load-categories-tsv worker)
+                   (bcore2/generate worker am/generate-category 10)
+                   (bcore2/generate worker am/generate-global-attribute-group 10)
+                   (bcore2/generate worker am/generate-global-attribute-value 100)
+                   (am/proc-new-item worker))]
+          (tu/then-await-tx tx *node*)
+
           ;; new item
-          (let [{:keys [i_id i_u_id]} (ffirst (xt/q (xt/db *node**) '{:find [(pull id [*])] :where [[id :i_id]]}))]
+          (let [{:keys [i_id i_u_id]} (first (c2/datalog-query *node* '{:find [i_id i_u_id]
+                                                                        :where [[id :_table :item]
+                                                                                [id :i_id i_id]
+                                                                                [id :i_u_id i_u_id]]}))]
             (t/is (= "i_0" i_id))
             (t/is (= "u_0" i_u_id)))
-          (t/is (< (- (ffirst (xt/q (xt/db *node**) '{:find [u_balance]
-                                                      :where [[u :u_id uid]
-                                                              [u :u_balance u_balance]]}))
+          (t/is (< (- (:u_balance (first (c2/datalog-query *node* '{:find [u_balance]
+                                                                    :where [[u :u_id]
+                                                                            [u :u_balance u_balance]]})))
                       (double -1.0))
-                   0.0001))))))
+                   0.0001)))))))
+
 #_(def hello-world
     #c2/clj-form (fn hello-world []
                    (println "hello world")
                    [[:put {:id 1 :hello :world}]]))
 
-(t/deftest sci-print-test
-  (let [tx1 (c2/submit-tx *node* [[:put {:id :hello-world :fn hello-world
-                                         #_(fn hello-world []
-                                             (println "hello world")
-                                             [[:put {:id 1 :hello :world}]])}]])
-        tx2 (c2/submit-tx *node* [[:call :hello-world]])]
-    (tu/then-await-tx tx2 *node*)
-    (t/is (= 1 1)#_(= {:hello :world} (first (c2/datalog-query *node* '{:find [hello] :where [[1 :hello hello]]}))))
-    ))
+;; (t/deftest sci-print-test
+;;   (let [tx1 (c2/submit-tx *node* [[:put {:id :hello-world :fn hello-world
+;;                                          #_(fn hello-world []
+;;                                              (println "hello world")
+;;                                              [[:put {:id 1 :hello :world}]])}]])
+;;         tx2 (c2/submit-tx *node* [[:call :hello-world]])]
+;;     (tu/then-await-tx tx2 *node*)
+;;     (t/is (= 1 1)#_(= {:hello :world} (first (c2/datalog-query *node* '{:find [hello] :where [[1 :hello hello]]}))))
+;;     ))
 
 
-(t/deftest hello-world-tx-fn-test
-  (let [tx1 (c2/submit-tx *node* [[:put {:id :hello-world :fn #_hello-world
-                                         #c2/clj-form (fn hello-world []
-                                                        (println "hello world")
-                                                        [[:put {:id 1 :hello :world}]])}]
-                                  [:put {:id :hello-world2 :fn
-                                         #c2/clj-form (fn hello-world2 []
-                                                        [[:call :hello-world]])}]])
-        tx2 (c2/submit-tx *node* [[:call :hello-world2]])]
-    (tu/then-await-tx tx2 *node*)
-    (t/is (= 1 1)#_(= {:hello :world} (first (c2/datalog-query *node* '{:find [hello] :where [[1 :hello hello]]}))))
-    ))
+;; (t/deftest hello-world-tx-fn-test
+;;   (let [tx1 (c2/submit-tx *node* [[:put {:id :hello-world :fn #_hello-world
+;;                                          #c2/clj-form (fn hello-world []
+;;                                                         (println "hello world")
+;;                                                         [[:put {:id 1 :hello :world}]])}]
+;;                                   [:put {:id :hello-world2 :fn
+;;                                          #c2/clj-form (fn hello-world2 []
+;;                                                         [[:call :hello-world]])}]])
+;;         tx2 (c2/submit-tx *node* [[:call :hello-world2]])]
+;;     (tu/then-await-tx tx2 *node*)
+;;     (t/is (= 1 1)#_(= {:hello :world} (first (c2/datalog-query *node* '{:find [hello] :where [[1 :hello hello]]}))))
+;;     ))
 
-(t/deftest query-in-tx-fn-test
-  (let [tx1 (c2/submit-tx *node* [[:put {:id 1 :foo :bar :bar :foo :_table :toto}]
-                                  [:put {:id :hello-world-fn
-                                         :fn #c2/clj-form (fn hello-world [id]
-                                                            [[:put {:id "query" :q (first (q '{:find [id foo bar]
-                                                                                               :in [id]
-                                                                                               :where
-                                                                                               [[id :_table :toto]
-                                                                                                [id :foo foo]
-                                                                                                [id :bar bar]]}
-                                                                                             id))}]])}]])
+;; (t/deftest query-in-tx-fn-test
+;;   (let [tx1 (c2/submit-tx *node* [[:put {:id 1 :foo :bar :bar :foo :_table :toto}]
+;;                                   [:put {:id :hello-world-fn
+;;                                          :fn #c2/clj-form (fn hello-world [id]
+;;                                                             [[:put {:id "query" :q (first (q '{:find [id foo bar]
+;;                                                                                                :in [id]
+;;                                                                                                :where
+;;                                                                                                [[id :_table :toto]
+;;                                                                                                 [id :foo foo]
+;;                                                                                                 [id :bar bar]]}
+;;                                                                                              id))}]])}]])
 
-        _ (tu/then-await-tx tx1 *node*)
-        tx2 (c2/submit-tx *node* [[:call :hello-world-fn 1]])]
-    (tu/then-await-tx tx2 *node*)
-    (t/is (= nil (c2/datalog-query *node* '{:find [q] :where [["query" :q q]]})))))
+;;         _ (tu/then-await-tx tx1 *node*)
+;;         tx2 (c2/submit-tx *node* [[:call :hello-world-fn 1]])]
+;;     (tu/then-await-tx tx2 *node*)
+;;     (t/is (= nil (c2/datalog-query *node* '{:find [q] :where [["query" :q q]]})))))
