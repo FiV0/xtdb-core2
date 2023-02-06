@@ -14,6 +14,7 @@
            (java.util Random Comparator)
            (com.google.common.collect MinMaxPriorityQueue)
            (java.util.function Function)
+           (java.util.concurrent ConcurrentHashMap)
            (java.time Instant Duration Clock)
            (oshi SystemInfo)
            (java.lang.management ManagementFactory)
@@ -31,7 +32,9 @@
 (def item-bid-id (partial str "ib_"))
 (def category-id (partial str "c_"))
 (def global-attribute-group-id (partial str "gag_"))
+(def gag-id global-attribute-group-id)
 (def global-attribute-value-id (partial str "gav_"))
+(def gav-id global-attribute-value-id)
 
 (def user-attribute-id (partial str "ua_"))
 (def item-name (b2/id))
@@ -42,6 +45,8 @@
 (def item-attributes-blob (b2/id))
 (def item-image-path (b2/id))
 (def auction-start-date (b2/id))
+
+(defn composite-id [& ids] (apply str (butlast (interleave ids (repeat "-")))))
 
 (defn generate-user [worker]
   (let [u_id (b2/increment worker user-id)]
@@ -61,7 +66,6 @@
      :u_sattr6 (b2/random-str worker)
      :u_sattr7 (b2/random-str worker)}))
 
-
 (defn proc-new-user
   "Creates a new USER record. The rating and balance are both set to zero.
 
@@ -70,36 +74,39 @@
   (->> [[:put (generate-user worker)]]
        (c2/submit-tx (:sut worker))))
 
-
 (def tx-fn-apply-seller-fee
-  '(fn apply-seller-fee [u_id]
-     (let [[u] (q '{:find [id u_id u_r_id u_rating u_balance u_created
-                           u_sattr0 u_sattr1 u_sattr2 u_sattr3 u_sattr4 u_sattr5 u_sattr6 u_sattr7]
-                    :where [[id :_table :user]
-                            [id :u_id u_id]
-                            [id :u_r_id u_r_id]
-                            [id :u_rating u_rating]
-                            [id :u_balance u_balance]
-                            [id :u_created u_created]
-                            [id :u_sattr0 u_sattr0]
-                            [id :u_sattr1 u_sattr1]
-                            [id :u_sattr2 u_sattr2]
-                            [id :u_sattr3 u_sattr3]
-                            [id :u_sattr4 u_sattr4]
-                            [id :u_sattr5 u_sattr5]
-                            [id :u_sattr6 u_sattr6]
-                            [id :u_sattr7 u_sattr7]]})]
-       (if u
-         [[:put (update u :u_balance dec)]]
-         []))))
+  #c2/clj-form
+  (fn apply-seller-fee [u_id]
+    (let [[u] (q '{:find [id u_id u_r_id u_rating u_balance u_created
+                          u_sattr0 u_sattr1 u_sattr2 u_sattr3 u_sattr4 u_sattr5 u_sattr6 u_sattr7]
+                   :in [u_id]
+                   :where [[id :_table :user]
+                           [id :u_id u_id]
+                           [id :u_r_id u_r_id]
+                           [id :u_rating u_rating]
+                           [id :u_balance u_balance]
+                           [id :u_created u_created]
+                           [id :u_sattr0 u_sattr0]
+                           [id :u_sattr1 u_sattr1]
+                           [id :u_sattr2 u_sattr2]
+                           [id :u_sattr3 u_sattr3]
+                           [id :u_sattr4 u_sattr4]
+                           [id :u_sattr5 u_sattr5]
+                           [id :u_sattr6 u_sattr6]
+                           [id :u_sattr7 u_sattr7]]}
+                 u_id)]
+      (if u
+        [[:put (update u :u_balance dec)]]
+        []))))
 
 (def item-query
-  '{:find [i i_u_id i_c_id i_name i_description i_user_attributes i_initial_price
+  '{:find [id i_u_id i_c_id i_name i_description i_user_attributes i_initial_price
            i_current_price i_num_bids i_num_images i_num_global_attrs i_start_date
            i_end-date]
     :in [i]
     :where
-    [[i :_table :item]
+    [[i :id id]
+     [i :_table :item]
      [i :i_u_id i_u_id]
      [i :i_c_id i_c_id]
      [i :i_name i_name]
@@ -114,9 +121,11 @@
      [i :i_end_date i_end-date]]})
 
 (def item-max-bid-query
-  '{:find [imb imb_i_id imb_u_id imb_ib_id imb_ib_i_id imb_ib_u_id imb_created]
+  '{:find [id imb_i_id imb_u_id imb_ib_id imb_ib_i_id imb_ib_u_id imb_created]
     :in [imb]
-    :where [[imb :imb_i_id imb_i_id]
+    :where [[imb :id id]
+            [imb :_table :item-max-bid]
+            [imb :imb_i_id imb_i_id]
             [imb :imb_u_id imb_u_id]
             [imb :imb_ib_id imb_ib_id]
             [imb :imb_ib_i_id imb_ib_i_id]
@@ -128,104 +137,142 @@
   "Transaction function.
 
   Enters a new bid for an item"
-  '(fn new-bid [{:keys [i_id
-                        u_id
-                        i_buyer_id
-                        bid
-                        max-bid
-                        ;; pass in from ctr rather than select-max+1 so ctr gets incremented
-                        new-bid-id
-                        ;; 'current timestamp'
-                        now]}]
-     (let [;; current max bid id
-           [imb imb_ib_id]
-           (-> (quote {:find [?imb, ?imb_ib_id]
-                       :in [?i_id]
-                       :where [[?imb :_table :item_max_bid]
-                               [?imb :imb_i_id ?i_id]
-                               [?imb :imb_u_id ?u_id]
-                               [?imb :imb_ib_id ?imb_ib_id]]})
-               (q q i_id)
-               first)
+  #c2/clj-form
+  (fn new-bid [{:keys [i_id
+                       u_id
+                       i_buyer_id
+                       bid
+                       max-bid
+                       ;; pass in from ctr rather than select-max+1 so ctr gets incremented
+                       new-bid-id
+                       ;; 'current timestamp'
+                       now] :as params}]
+    (let [;; current max bid id
+          {:keys [imb imb_ib_id] :as res}
+          (-> (quote {:find [imb, imb_ib_id]
+                      :in [?i_id]
+                      :where [[imb :_table :item-max-bid]
+                              [imb :imb_i_id ?i_id]
+                              [imb :imb_u_id ?u_id]
+                              [imb :imb_ib_id imb_ib_id]]})
+              (q i_id)
+              first)
+          ;; _ (println res)
 
-           ;; current number of bids
-           [i nbids]
-           (-> (quote {:find [?i, ?nbids]
-                       :in [?i_id]
-                       :where [[?i :_table :item]
-                               [?i :i_id ?iid]
-                               [?i :i_num_bids ?nbids]
-                               [?i :i_status 0]]})
-               (q q_id)
-               first)
 
-           ;; current bid/max
-           [curr-bid, curr-max]
-           (when imb_ib_id
-             (-> (quote {:find [?bid ?max]
-                         :in [?imb_ib_id]
-                         :where [[?ib :_table :item_bid]
-                                 [?ib :ib_id ?imb_ib_id]
-                                 [?ib :ib_bid ?bid]
-                                 [?ib :ib_max_bid ?max-bid]]})
-                 (q imb_ib_id)
-                 first))
+          ;; current number of bids
+          {:keys [i nbids] :as res}
+          (-> (quote {:find [i, nbids]
+                      :in [i_id]
+                      :where [[i :_table :item]
+                              [i :i_id i_id]
+                              [i :i_num_bids nbids]
+                              [i :i_status :open]]})
+              (q i_id)
+              first)
+          ;; _ (println res)
 
-           new-bid-win (or (nil? imb_ib_id) (< curr-max max-bid))
-           new-bid (if (and new-bid-win curr-max (< bid curr-max) curr-max) curr-max bid)
-           upd-curr-bid (and curr-bid (not new-bid-win) (< curr-bid bid))]
+          ;; current bid/max
+          {:keys [curr-bid, curr-max] :as res}
+          (when imb_ib_id
+            (-> (quote {:find [curr-bid curr-max]
+                        :in [?imb_ib_id]
+                        :where [[?ib :_table :item-bid]
+                                [?ib :ib_id ?imb_ib_id]
+                                [?ib :ib_bid curr-bid]
+                                [?ib :ib_max_bid curr-max]]})
+                (q imb_ib_id)
+                first))
 
-       (cond->
-           []
-         ;; increment number of bids on item
-         i
-         (conj [:put (assoc (first (q item-query i))
-                            :i_num_bids (inc nbids)
-                            :_table :item)])
+          new-bid-win (or (nil? imb_ib_id) (< curr-max max-bid))
+          new-bid (if (and new-bid-win curr-max (< bid curr-max) curr-max) curr-max bid)
+          upd-curr-bid (and curr-bid (not new-bid-win) (< curr-bid bid))
+          composite-id-fn (fn [& ids] (apply str (butlast (interleave ids (repeat "-")))))
+          item-query '{:find [id i_id i_u_id i_c_id i_name i_description i_user_attributes i_initial_price
+                              i_current_price i_num_bids i_num_images i_num_global_attrs i_start_date
+                              i_end_date i_status]
+                       :in [i]
+                       :where [[i :id id]
+                               [i :_table :item]
+                               [i :i_id i_id]
+                               [i :i_u_id i_u_id]
+                               [i :i_c_id i_c_id]
+                               [i :i_name i_name]
+                               [i :i_description i_description]
+                               [i :i_user_attributes i_user_attributes]
+                               [i :i_initial_price i_initial_price]
+                               [i :i_current_price i_current_price]
+                               [i :i_num_bids i_num_bids]
+                               [i :i_num_images i_num_images]
+                               [i :i_num_global_attrs i_num_global_attrs]
+                               [i :i_start_date i_start_date]
+                               [i :i_end_date i_end_date]
+                               [i :i_status i_status]]}
+          item-max-bid-query '{:find [id imb_i_id imb_u_id imb_ib_id imb_ib_i_id imb_ib_u_id imb_created]
+                               :in [imb]
+                               :where [[imb :id id]
+                                       [imb :_table :item-max-bid]
+                                       [imb :imb_i_id imb_i_id]
+                                       [imb :imb_u_id imb_u_id]
+                                       [imb :imb_ib_id imb_ib_id]
+                                       [imb :imb_ib_i_id imb_ib_i_id]
+                                       [imb :imb_ib_u_id imb_ib_u_id]
+                                       [imb :imb_created imb_created]
+                                       [imb :imb_updated imb_updated]]}
+          iq (q item-query i)]
+      (cond-> []
+        ;; increment number of bids on item
+        i
+        (conj [:put (assoc (first (q item-query i))
+                           :i_num_bids (inc nbids)
+                           :_table :item)])
 
-         ;; if new bid exceeds old, bump it
-         upd-curr-bid
-         (conj [:put (assoc (first (q item-max-bid-query imb))
-                            :imb_bid bid
-                            :_table :item-max-bid)])
+        ;; if new bid exceeds old, bump it
+        upd-curr-bid
+        (conj [:put (assoc (first (q item-max-bid-query imb))
+                           :imb_bid bid
+                           :_table :item-max-bid)])
 
-         ;; we exceed the old max, win the bid.
-         (and curr-bid new-bid-win)
-         (conj [:put (assoc (first (q item-max-bid-query imb))
-                            :_table :item-max-bid
-                            :imb_ib_id new-bid-id
-                            :imb_ib_u_id u_id
-                            :imb_updated now)])
+        ;; we exceed the old max, win the bid.
+        (and curr-bid new-bid-win)
+        (conj [:put (assoc (first (q item-max-bid-query imb))
+                           :_table :item-max-bid
+                           :imb_ib_id new-bid-id
+                           :imb_ib_u_id u_id
+                           :imb_updated now)])
 
-         ;; no previous max bid, insert new max bid
-         (nil? imb_ib_id)
-         (conj [:put {:id new-bid-id
-                      :_table :item-max-bid
-                      :imb_i_id i_id
-                      :imb_u_id u_id
-                      :imb_ib_id new-bid-id
-                      :imb_ib_i_id i_id
-                      :imb_ib_u_id u_id
-                      :imb_created now
-                      :imb_updated now}])
+        ;; no previous max bid, insert new max bid
+        (nil? imb_ib_id)
+        (conj [:put {:id (composite-id-fn new-bid-id i_id)
+                     :_table :item-max-bid
+                     :imb_i_id i_id
+                     :imb_u_id u_id
+                     :imb_ib_id new-bid-id
+                     :imb_ib_i_id i_id
+                     :imb_ib_u_id u_id
+                     :imb_created now
+                     :imb_updated now}])
 
-         :always
-         ;; add new bid
-         (conj [:put {:id new-bid-id
-                      :_table :item_bid
-                      :ib_id new-bid-id
-                      :ib_i_id i_id
-                      :ib_u_id u_id
-                      :ib_buyer_id i_buyer_id
-                      :ib_bid new-bid
-                      :ib_max_bid max-bid
-                      :ib_created_at now
-                      :ib_updated now}])))))
+        :always
+        ;; add new bid
+        (conj [:put {:id new-bid-id
+                     :_table :item-bid
+                     :ib_id new-bid-id
+                     :ib_i_id i_id
+                     :ib_u_id u_id
+                     :ib_buyer_id i_buyer_id
+                     :ib_bid new-bid
+                     :ib_max_bid max-bid
+                     :ib_created_at now
+                     :ib_updated now}])))))
 
 (defn- sample-category-id [worker]
   (if-some [weighting (::category-weighting (:custom-state worker))]
     (weighting (b2/rng worker))
     (b2/sample-gaussian worker category-id)))
+
+(defn sample-status [worker]
+  (nth [:open :waiting-for-purchase :closed] (mod (.nextInt ^Random (b2/rng worker)) 3)))
 
 (defn proc-new-item
   "Insert a new ITEM record for a user.
@@ -305,6 +352,8 @@
       (and (pos? i_num_bids) (not= :closed i_status)) :waiting-for-purchase
       :else i_status)))
 
+
+
 (defn item-status-groups [node ^Instant now]
   (let [items (c2/datalog-query node '{:find [?i, ?i_u_id, ?i_status, ?i_end_date, ?i_num_bids]
                                        :where [[?i :_table :item]
@@ -353,14 +402,20 @@
         item (b2/random-nth worker isg)]
     item))
 
-(defn- generate-new-bid-params [worker]
+(defn add-item-status [{:keys [^ConcurrentHashMap custom-state] :as worker}
+                       {:keys [i_status] :as item-sample}]
+  (.putAll custom-state {:item-status-groups (-> custom-state :item-status-groups
+                                                 (update :all (fnil conj []) item-sample)
+                                                 (update i_status (fnil conj []) item-sample))}))
+
+(defn generate-new-bid-params [worker]
   (let [{:keys [i_id, i_u_id]} (random-item worker :status :open)
         i_buyer_id (b2/sample-gaussian worker user-id)]
     (if (and i_buyer_id (= i_buyer_id i_u_id))
       (generate-new-bid-params worker)
       {:i_id i_id,
-       :i_u_id i_u_id,
-       :ib_buyer_id i_buyer_id
+       :u_id i_u_id,
+       :i_buyer_id i_buyer_id
        :bid (random-price worker)
        :max-bid (random-price worker)
        :new-bid-id (b2/increment worker item-bid-id)
@@ -368,7 +423,7 @@
 
 (defn proc-new-bid [worker]
   (let [params (generate-new-bid-params worker)]
-    (when (and (:i_id params) (:i_u_id params))
+    (when (and (:i_id params) (:u_id params))
       (c2/submit-tx (:sut worker) [[:call :new-bid params]]))))
 
 (defn- pull-query [table attributes]
@@ -387,14 +442,14 @@
         ;; the benchbase project uses a profile that keeps item pairs around
         ;; selects only closed items for a particular user profile (they are sampled together)
         ;; right now this is a totally random sample with one less join than we need.
-        i_id (b2/sample-flat worker item-id)
+        {:keys [i_id]} (random-item worker :status :open)
+        ;; i_id (b2/sample-flat worker item-id)
         q '{:find [i_id i_u_id i_initial_price i_current_price]
             #_(pull ?i [:i_id, :i_u_id, :i_initial_price, :i_current_price])
-            :in [?iid]
+            :in [i_id]
             :where [[?i :_table :item]
                     [?i :i_id i_id]
-                    [?i :i_id ?iid]
-                    [?i :i_status 0]
+                    [?i :i_status :open]
                     [?i :i_u_id i_u_id]
                     [?i :i_initial_price i_initial_price]
                     [?i :i_current_price i_current_price]]}]
@@ -439,11 +494,27 @@
                            ::category-weighting (b2/weighted-sample-fn (map (juxt :id :item-count) (vals cats)))})))
 
 (defn generate-region [worker]
-  (let [r-id (b2/increment worker category-id)]
+  (let [r-id (b2/increment worker region-id)]
     {:id r-id
      :_table :region
      :r_id r-id
      :r_name (b2/random-str worker 6 32)}))
+
+(defn generate-global-attribute-group [worker]
+  (let [gag-id (b2/increment worker gag-id)
+        category-id (b2/sample-flat worker category-id)]
+    {:id gag-id
+     :_table :gag
+     :gag_c_id category-id
+     :gag_name (b2/random-str worker 6 32)}))
+
+(defn generate-global-attribute-value [worker]
+  (let [gav-id (b2/increment worker gav-id)
+        gag-id (b2/sample-flat worker gag-id)]
+    {:id gav-id
+     :_table :gav
+     :gav_gag_id gag-id
+     :gav_name (b2/random-str worker 6 32)}))
 
 (defn generate-category [worker]
   (let [{::keys [categories]} (:custom-state worker)
@@ -460,7 +531,7 @@
         ua-id (b2/increment worker user-attribute-id)]
     (when u_id
       {:id ua-id
-       :_table :user-attributes
+       :_table :user-attribute
        :ua_u_id u_id
        :ua_name (b2/random-str worker 5 32)
        :ua_value (b2/random-str worker 5 32)
@@ -469,10 +540,15 @@
 (defn generate-item [worker]
   (let [i_id (b2/increment worker item-id)
         i_u_id (b2/sample-flat worker user-id)
-        i_c_id (sample-category-id worker)]
+        i_c_id (sample-category-id worker)
+        i_start_date (b2/current-timestamp worker)
+        i_end_date (.plus ^Instant (b2/current-timestamp worker) (Duration/ofDays 32))
+        i_status (sample-status worker)]
+    (add-item-status worker (->ItemSample i_id i_u_id i_status i_end_date 0))
     (when i_u_id
       {:id i_id
        :_table :item
+       :i_id i_id
        :i_u_id i_u_id
        :i_c_id i_c_id
        :i_name (b2/random-str worker 6 32)
@@ -483,8 +559,10 @@
        :i_num_bids 0
        :i_num_images 0
        :i_num_global_attrs 0
-       :i_start_date (b2/current-timestamp worker)
-       :i_end_date (.plus ^Instant (b2/current-timestamp worker) (Duration/ofDays 32))})))
+       :i_start_date i_start_date
+       :i_end_date i_end_date
+       #_(.plus ^Instant (b2/current-timestamp worker) (Duration/ofDays 32))
+       :i_status i_status})))
 
 (defn- wrap-in-logging [f]
   (fn [& args]
@@ -493,6 +571,9 @@
       (log/trace (str "Finish of " f))
       res)))
 
+(comment
+  (require 'sc.api)
+  )
 
 (defn- wrap-in-catch [f]
   (fn [& args]
@@ -550,11 +631,11 @@
                                      :choices [[{:t :call, :transaction :get-item, :f (wrap-in-catch proc-get-item)} 12.0]
                                                [{:t :call, :transaction :new-user, :f proc-new-user} 0.5]
                                                [{:t :call, :transaction :new-item, :f proc-new-item} 1.0]
-                                               [{:t :call, :transaction :new-bid, :f  proc-new-bid} 2.0]]}}
+                                               [{:t :call, :transaction :new-bid,  :f proc-new-bid} 2.0]]}}
                       {:t :freq-job
                        :duration duration
                        :freq (Duration/ofMillis (* 0.2 (.toMillis duration)))
-                       :job-task {:t :call, :transaction :index-item-status-groups, :f (wrap-in-catch index-item-status-groups)}}]}
+                       :job-task {:t :call, :transaction :index-item-status-groups, :f index-item-status-groups}}]}
       (when sync {:t :call,
                   :stage :sync
                   :f sync-call})]}))
