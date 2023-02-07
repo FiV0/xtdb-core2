@@ -335,8 +335,8 @@
                    :ii_i_id i_id
                    :ii_u_id u_id
                    :ii_path image}])
-          ;; reg tx fn?
-          [[:call :apply-seller-fee u_id]])
+          ;; fix BitVector metadata issue
+          (when u_id [[:call :apply-seller-fee u_id]]))
          (c2/submit-tx (:sut worker)))))
 
 ;; represents a probable state of an item that can be sampled randomly
@@ -368,18 +368,22 @@
           waiting-for-purchase (ArrayList.)
           closed (ArrayList.)]
       (doseq [{:keys [i_id i_u_id i_status ^Instant i_end_date i_num_bids]} items
-              :let [projected-status (project-item-status i_status i_end_date i_num_bids now)
+              :let [projected-status i_status #_(project-item-status i_status i_end_date i_num_bids now)
 
                     ^ArrayList alist
                     (case projected-status
                       :open open
                       :closed closed
                       :waiting-for-purchase waiting-for-purchase
-                      :ending-soon ending-soon)
+                      :ending-soon ending-soon
+                      ;; TODO debug why this happens
+                      nil)
 
                     item-sample (->ItemSample i_id i_u_id i_status i_end_date i_num_bids)]]
+
         (.add all item-sample)
-        (.add alist item-sample))
+        (when alist
+          (.add alist item-sample)))
       {:all (vec all)
        :open (vec open)
        :ending-soon (vec ending-soon)
@@ -396,6 +400,42 @@
     (.putAll custom-state {:item-status-groups res #_(item-status-groups node now)})
     #_(with-open [db (xt/open-db sut)]
         (.putAll custom-state {:item-status-groups (item-status-groups db now)}))))
+
+(defn largest-id [node table prefix-length]
+  (let [id (->> (c2/datalog-query node `{:find [~'id]
+                                         :where [[~'id :_table ~table]]})
+                (sort-by :id #(compare %2 %1))
+                first
+                :id)]
+    (when id
+      (parse-long (subs id prefix-length)))))
+
+(defn load-stats-into-worker [{:keys [sut] :as worker}]
+  (index-item-status-groups worker)
+  (log/info "query for user")
+  (b2/set-domain worker user-id (or (largest-id sut :user 2) 0))
+  (log/info "query for region")
+  (b2/set-domain worker region-id (or (largest-id sut :region 2) 0))
+  (log/info "query for item")
+  (b2/set-domain worker item-id (or (largest-id sut :item 2) 0))
+  (log/info "query for item-bid")
+  (b2/set-domain worker item-bid-id (or (largest-id sut :item-bid 3) 0))
+  (log/info "query for category")
+  (b2/set-domain worker category-id (or (largest-id sut :category 2) 0))
+  (log/info "query for gag")
+  (b2/set-domain worker gag-id (or (largest-id sut :gag 4) 0))
+  (log/info "query for gav")
+  (b2/set-domain worker gav-id (or (largest-id sut :gav 4) 0)))
+
+(defn log-stats [worker]
+  (log/info "#user " (.get (b/counter worker user-id)))
+  (log/info "#region " (.get (b/counter worker region-id)))
+  (log/info "#item " (.get (b/counter worker item-id)))
+  (log/info "#item-bid " (.get (b/counter worker item-id)))
+  (log/info "#category " (.get (b/counter worker category-id)))
+  (log/info "#gag " (.get (b/counter worker gag-id)))
+  (log/info "#gav " (.get (b/counter worker gav-id))))
+
 
 (defn random-item [worker & {:keys [status] :or {status :all}}]
   (let [isg (-> worker :custom-state :item-status-groups (get status) vec)
@@ -605,37 +645,43 @@
     {:title "Auction Mark OLTP"
      :seed seed
      :tasks
-     [{:t :do
-       :stage :load
-       :tasks [{:t :call, :f (fn [_] (log/info "start load stage"))}
-               {:t :call, :f [bcore2/install-tx-fns {:apply-seller-fee tx-fn-apply-seller-fee, :new-bid tx-fn-new-bid}]}
-               {:t :call, :f load-categories-tsv}
-               {:t :call, :f [bcore2/generate generate-region 75]}
-               {:t :call, :f [bcore2/generate generate-category 16908]}
-               {:t :call, :f [bcore2/generate generate-user (* sf 1e6)]}
-               {:t :call, :f [bcore2/generate generate-user-attributes (* sf 1e6 1.3)]}
-               ;; we wait here for the last tx to finish
-               {:t :call, :f [bcore2/generate generate-item (* sf 1e6 10) true]}
-               {:t :call, :f sync-call}
-               {:t :call, :f (fn [_] (log/info "finished load stage"))}]}
-      {:t :concurrently
-       :stage :oltp
-       :duration duration
-       :join-wait (Duration/ofSeconds 5)
-       :thread-tasks [{:t :pool
-                       :duration duration
-                       :join-wait (Duration/ofSeconds 5)
-                       :thread-count threads
-                       :think Duration/ZERO
-                       :pooled-task {:t :pick-weighted
-                                     :choices [[{:t :call, :transaction :get-item, :f (wrap-in-catch proc-get-item)} 12.0]
-                                               [{:t :call, :transaction :new-user, :f proc-new-user} 0.5]
-                                               [{:t :call, :transaction :new-item, :f proc-new-item} 1.0]
-                                               [{:t :call, :transaction :new-bid,  :f proc-new-bid} 2.0]]}}
-                      {:t :freq-job
-                       :duration duration
-                       :freq (Duration/ofMillis (* 0.2 (.toMillis duration)))
-                       :job-task {:t :call, :transaction :index-item-status-groups, :f index-item-status-groups}}]}
+     [#_{:t :do
+         :stage :load
+         :tasks [{:t :call, :f (fn [_] (log/info "start load stage"))}
+                 {:t :call, :f [bcore2/install-tx-fns {:apply-seller-fee tx-fn-apply-seller-fee, :new-bid tx-fn-new-bid}]}
+                 {:t :call, :f load-categories-tsv}
+                 {:t :call, :f [bcore2/generate generate-region 75]}
+                 {:t :call, :f [bcore2/generate generate-category 16908]}
+                 {:t :call, :f [bcore2/generate generate-user (* sf 1e6)]}
+                 {:t :call, :f [bcore2/generate generate-user-attributes (* sf 1e6 1.3)]}
+                 ;; we wait here for the last tx to finish
+                 {:t :call, :f [bcore2/generate generate-item (* sf 1e6 10) true]}
+                 {:t :call, :f sync-call}
+                 {:t :call, :f (fn [_] (log/info "finished load stage"))}]}
+      {:t :do
+       :stage :setup-worker
+       :tasks [{:t :call, :f (fn [_] (log/info "setting up worker with stats"))}
+               {:t :call, :f load-stats-into-worker}
+               {:t :call, :f log-stats}
+               {:t :call, :f (fn [_] (log/info "finished setting up worker with stats"))}]}
+      #_{:t :concurrently
+         :stage :oltp
+         :duration duration
+         :join-wait (Duration/ofSeconds 5)
+         :thread-tasks [{:t :pool
+                         :duration duration
+                         :join-wait (Duration/ofSeconds 5)
+                         :thread-count threads
+                         :think Duration/ZERO
+                         :pooled-task {:t :pick-weighted
+                                       :choices [[{:t :call, :transaction :get-item, :f (wrap-in-catch proc-get-item)} 12.0]
+                                                 [{:t :call, :transaction :new-user, :f (wrap-in-catch proc-new-user)} 0.5]
+                                                 [{:t :call, :transaction :new-item, :f (wrap-in-catch proc-new-item)} 1.0]
+                                                 [{:t :call, :transaction :new-bid,  :f (wrap-in-catch proc-new-bid)} 2.0]]}}
+                        {:t :freq-job
+                         :duration duration
+                         :freq (Duration/ofMillis (* 0.2 (.toMillis duration)))
+                         :job-task {:t :call, :transaction :index-item-status-groups, :f index-item-status-groups}}]}
       (when sync {:t :call,
                   :stage :sync
                   :f sync-call})]}))
