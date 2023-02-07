@@ -150,10 +150,10 @@
     (let [;; current max bid id
           {:keys [imb imb_ib_id] :as res}
           (-> (quote {:find [imb, imb_ib_id]
-                      :in [?i_id]
+                      :in [i_id]
                       :where [[imb :_table :item-max-bid]
-                              [imb :imb_i_id ?i_id]
-                              [imb :imb_u_id ?u_id]
+                              [imb :imb_i_id i_id]
+                              [imb :imb_u_id u_id]
                               [imb :imb_ib_id imb_ib_id]]})
               (q i_id)
               first)
@@ -302,9 +302,9 @@
         description-with-attributes
         (let [q '{:find [?gag-name ?gav-name]
                   :in [[?gag-id ...] [?gav-id ...]]
-                  :where [[?gag-id :_table :global-attribute-group]
+                  :where [[?gag-id :_table :gag]
                           [?gag-id :gag_name ?gag-name]
-                          [?gav-id :_table :global-attribute-value]
+                          [?gav-id :_table :gav]
                           [?gav-id :gav_gag_id ?gag-id]
                           [?gav-id :gav_name ?gav-name]]}]
           (->> (c2/datalog-query (:sut worker) q gag-ids gav-ids)
