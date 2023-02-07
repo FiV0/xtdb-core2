@@ -355,13 +355,13 @@
 
 
 (defn item-status-groups [node ^Instant now]
-  (let [items (c2/datalog-query node '{:find [?i, ?i_u_id, ?i_status, ?i_end_date, ?i_num_bids]
-                                       :where [[?i :_table :item]
-                                               [?i :i_id ?i_id]
-                                               [?i :i_u_id ?i_u_id]
-                                               [?i :i_status ?i_status]
-                                               [?i :i_end_date ?i_end_date]
-                                               [?i :i_num_bids ?i_num_bids]]})]
+  (let [items (c2/datalog-query node '{:find [i, i_id, i_u_id, i_status, i_end_date, i_num_bids]
+                                       :where [[i :_table :item]
+                                               [i :i_id i_id]
+                                               [i :i_u_id i_u_id]
+                                               [i :i_status i_status]
+                                               [i :i_end_date i_end_date]
+                                               [i :i_num_bids i_num_bids]]})]
     (let [all (ArrayList.)
           open (ArrayList.)
           ending-soon (ArrayList.)
