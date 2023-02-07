@@ -1,5 +1,6 @@
 (ns core2.bench
-  (:require [clojure.string :as str])
+  (:require [clojure.string :as str]
+            [core2.util :as util])
   (:import (java.util.concurrent.atomic AtomicLong)
            (java.util.concurrent ConcurrentHashMap Executors TimeUnit)
            (java.util Random Comparator)
@@ -28,6 +29,8 @@
   (fn [n] n))
 
 (defn increment [worker domain] (domain (.getAndIncrement (counter worker domain))))
+
+(defn set-domain [worker domain cnt] (.getAndAdd (counter worker domain) cnt))
 
 (defn- nat-or-nil [n] (when (nat-int? n) n))
 
@@ -162,7 +165,7 @@
                    f (compile-task pooled-task)
 
                    executor
-                   (Executors/newFixedThreadPool thread-count)
+                   (Executors/newFixedThreadPool thread-count (util/->prefix-thread-factory "core2-benchmark"))
 
                    thread-loop
                    (fn run-pool-thread-loop [worker]
@@ -192,7 +195,7 @@
 
                    thread-task-fns (mapv compile-task thread-tasks)
 
-                   executor (Executors/newFixedThreadPool (count thread-tasks))
+                   executor (Executors/newFixedThreadPool (count thread-tasks) (util/->prefix-thread-factory "core2-benchmark"))
 
                    start-thread
                    (fn [root-worker i f]
