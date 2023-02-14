@@ -432,7 +432,7 @@
   (log/info "#user " (.get (b/counter worker user-id)))
   (log/info "#region " (.get (b/counter worker region-id)))
   (log/info "#item " (.get (b/counter worker item-id)))
-  (log/info "#item-bid " (.get (b/counter worker item-id)))
+  (log/info "#item-bid " (.get (b/counter worker item-bid-id)))
   (log/info "#category " (.get (b/counter worker category-id)))
   (log/info "#gag " (.get (b/counter worker gag-id)))
   (log/info "#gav " (.get (b/counter worker gav-id))))
