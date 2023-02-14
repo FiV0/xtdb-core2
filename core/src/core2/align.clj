@@ -17,12 +17,14 @@
    (->row-id-bitmap nil row-id-vec))
 
   (^org.roaringbitmap.longlong.Roaring64Bitmap [^ints idxs ^BigIntVector row-id-vec]
-   (let [res (Roaring64Bitmap.)]
+   (let [res (Roaring64Bitmap.)
+         longs (long-array (or (when idxs (alength idxs)) (.getValueCount row-id-vec)))]
      (if idxs
        (dotimes [idx (alength idxs)]
-         (.addLong res (.get row-id-vec (aget idxs idx))))
+         (aset longs idx (.get row-id-vec (aget idxs idx))))
        (dotimes [idx (.getValueCount row-id-vec)]
-         (.addLong res (.get row-id-vec idx))))
+         (aset longs idx (.get row-id-vec idx))))
+     (.add res longs)
      res)))
 
 (defn- <-row-id-bitmap ^ints [^Roaring64Bitmap row-ids ^BigIntVector row-id-vec]
