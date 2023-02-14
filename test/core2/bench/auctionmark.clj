@@ -218,8 +218,7 @@
                                        [imb :imb_ib_i_id imb_ib_i_id]
                                        [imb :imb_ib_u_id imb_ib_u_id]
                                        [imb :imb_created imb_created]
-                                       [imb :imb_updated imb_updated]]}
-          iq (q item-query i)]
+                                       [imb :imb_updated imb_updated]]}]
       (cond-> []
         ;; increment number of bids on item
         i
@@ -404,7 +403,9 @@
 (defn largest-id [node table prefix-length]
   (let [id (->> (c2/datalog-query node `{:find [~'id]
                                          :where [[~'id :_table ~table]]})
-                (sort-by :id #(compare %2 %1))
+                (sort-by :id #(cond (< (count %1) (count %2)) 1
+                                    (< (count %2) (count %1)) -1
+                                    :else (compare %2 %1)))
                 first
                 :id)]
     (when id
@@ -626,7 +627,7 @@
   (let [node (:sut worker)
         tx @(c2/submit-tx node [[:put {:id "auctionmarkd-sync"}]])]
     (log/info "Syncing node!")
-    (tu/then-await-tx tx node (Duration/ofHours 1))
+    (tu/then-await-tx tx node (Duration/ofSeconds 30))
     (log/info "Finished syncing node!")))
 
 (defn benchmark [{:keys [seed,
@@ -654,7 +655,6 @@
                  {:t :call, :f [bcore2/generate generate-category 16908]}
                  {:t :call, :f [bcore2/generate generate-user (* sf 1e6)]}
                  {:t :call, :f [bcore2/generate generate-user-attributes (* sf 1e6 1.3)]}
-                 ;; we wait here for the last tx to finish
                  {:t :call, :f [bcore2/generate generate-item (* sf 1e6 10) true]}
                  {:t :call, :f sync-call}
                  {:t :call, :f (fn [_] (log/info "finished load stage"))}]}
