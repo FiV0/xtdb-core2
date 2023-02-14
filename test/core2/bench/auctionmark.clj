@@ -1,28 +1,15 @@
 (ns core2.bench.auctionmark
-  (:require [clojure.tools.logging :as log]
-            [clojure.java.io :as io]
-            [clojure.string :as str]
-            [core2.api :as c2]
-            [core2.await :as await]
-            [core2.bench :as b2]
-            [core2.bench.core2 :as bcore2]
-            [core2.bench :as bench]
-            [core2.test-util :as util]
-            [core2.test-util :as tu])
-  (:import (java.util.concurrent.atomic AtomicLong)
-           (java.util.concurrent ConcurrentHashMap Executors TimeUnit)
-           (java.util Random Comparator)
-           (com.google.common.collect MinMaxPriorityQueue)
-           (java.util.function Function)
-           (java.util.concurrent ConcurrentHashMap)
-           (java.time Instant Duration Clock)
-           (oshi SystemInfo)
-           (java.lang.management ManagementFactory)
-           (java.time Instant Duration)
-           (java.util ArrayList)
-           (java.util.concurrent ConcurrentHashMap)))
-
-;; (ns-unalias *ns* 'await)
+  (:require
+   [clojure.java.io :as io]
+   [clojure.string :as str]
+   [clojure.tools.logging :as log]
+   [core2.api :as c2]
+   [core2.bench :as b2]
+   [core2.test-util :as tu])
+  (:import
+   (java.time Duration Instant)
+   (java.util ArrayList Random)
+   (java.util.concurrent ConcurrentHashMap)))
 
 (defn random-price [worker] (.nextDouble (b2/rng worker)))
 
@@ -351,8 +338,6 @@
       (and (pos? i_num_bids) (not= :closed i_status)) :waiting-for-purchase
       :else i_status)))
 
-
-
 (defn item-status-groups [node ^Instant now]
   (let [items (c2/datalog-query node '{:find [i, i_id, i_u_id, i_status, i_end_date, i_num_bids]
                                        :where [[i :_table :item]
@@ -360,35 +345,34 @@
                                                [i :i_u_id i_u_id]
                                                [i :i_status i_status]
                                                [i :i_end_date i_end_date]
-                                               [i :i_num_bids i_num_bids]]})]
-    (let [all (ArrayList.)
-          open (ArrayList.)
-          ending-soon (ArrayList.)
-          waiting-for-purchase (ArrayList.)
-          closed (ArrayList.)]
-      (doseq [{:keys [i_id i_u_id i_status ^Instant i_end_date i_num_bids]} items
-              :let [projected-status i_status #_(project-item-status i_status i_end_date i_num_bids now)
+                                               [i :i_num_bids i_num_bids]]})
+        all (ArrayList.)
+        open (ArrayList.)
+        ending-soon (ArrayList.)
+        waiting-for-purchase (ArrayList.)
+        closed (ArrayList.)]
+    (doseq [{:keys [i_id i_u_id i_status ^Instant i_end_date i_num_bids]} items
+            :let [projected-status i_status #_(project-item-status i_status i_end_date i_num_bids now)
 
-                    ^ArrayList alist
-                    (case projected-status
-                      :open open
-                      :closed closed
-                      :waiting-for-purchase waiting-for-purchase
-                      :ending-soon ending-soon
-                      ;; TODO debug why this happens
-                      nil)
+                  ^ArrayList alist
+                  (case projected-status
+                    :open open
+                    :closed closed
+                    :waiting-for-purchase waiting-for-purchase
+                    :ending-soon ending-soon
+                    ;; TODO debug why this happens
+                    nil)
 
-                    item-sample (->ItemSample i_id i_u_id i_status i_end_date i_num_bids)]]
+                  item-sample (->ItemSample i_id i_u_id i_status i_end_date i_num_bids)]]
 
-        (.add all item-sample)
-        (when alist
-          (.add alist item-sample)))
-      {:all (vec all)
-       :open (vec open)
-       :ending-soon (vec ending-soon)
-       :waiting-for-purchase (vec waiting-for-purchase)
-       :closed (vec closed)})))
-
+      (.add all item-sample)
+      (when alist
+        (.add alist item-sample)))
+    {:all (vec all)
+     :open (vec open)
+     :ending-soon (vec ending-soon)
+     :waiting-for-purchase (vec waiting-for-purchase)
+     :closed (vec closed)}))
 
 ;; do every now and again to provide inputs for item-dependent computations
 (defn index-item-status-groups [worker]
@@ -429,13 +413,13 @@
   (b2/set-domain worker gav-id (or (largest-id sut :gav 4) 0)))
 
 (defn log-stats [worker]
-  (log/info "#user " (.get (b/counter worker user-id)))
-  (log/info "#region " (.get (b/counter worker region-id)))
-  (log/info "#item " (.get (b/counter worker item-id)))
-  (log/info "#item-bid " (.get (b/counter worker item-bid-id)))
-  (log/info "#category " (.get (b/counter worker category-id)))
-  (log/info "#gag " (.get (b/counter worker gag-id)))
-  (log/info "#gav " (.get (b/counter worker gav-id))))
+  (log/info "#user " (.get (b2/counter worker user-id)))
+  (log/info "#region " (.get (b2/counter worker region-id)))
+  (log/info "#item " (.get (b2/counter worker item-id)))
+  (log/info "#item-bid " (.get (b2/counter worker item-bid-id)))
+  (log/info "#category " (.get (b2/counter worker category-id)))
+  (log/info "#gag " (.get (b2/counter worker gag-id)))
+  (log/info "#gav " (.get (b2/counter worker gav-id))))
 
 
 (defn random-item [worker & {:keys [status] :or {status :all}}]
@@ -484,16 +468,17 @@
         ;; selects only closed items for a particular user profile (they are sampled together)
         ;; right now this is a totally random sample with one less join than we need.
         {:keys [i_id]} (random-item worker :status :open)
+        ;; _ (log/info "id:" i_id)
         ;; i_id (b2/sample-flat worker item-id)
         q '{:find [i_id i_u_id i_initial_price i_current_price]
             #_(pull ?i [:i_id, :i_u_id, :i_initial_price, :i_current_price])
             :in [i_id]
-            :where [[?i :_table :item]
-                    [?i :i_id i_id]
-                    [?i :i_status :open]
-                    [?i :i_u_id i_u_id]
-                    [?i :i_initial_price i_initial_price]
-                    [?i :i_current_price i_current_price]]}]
+            :where [[i_id :_table :item]
+                    ;; [?i :i_id i_id]
+                    [i_id :i_status :open]
+                    [i_id :i_u_id i_u_id]
+                    [i_id :i_initial_price i_initial_price]
+                    [i_id :i_current_price i_current_price]]}]
     (c2/datalog-query sut q i_id)))
 
 (defn read-category-tsv []
@@ -612,10 +597,6 @@
       (log/trace (str "Finish of " f))
       res)))
 
-(comment
-  (require 'sc.api)
-  )
-
 (defn- wrap-in-catch [f]
   (fn [& args]
     (try
@@ -664,160 +645,24 @@
                {:t :call, :f load-stats-into-worker}
                {:t :call, :f log-stats}
                {:t :call, :f (fn [_] (log/info "finished setting up worker with stats"))}]}
-      #_{:t :concurrently
-         :stage :oltp
-         :duration duration
-         :join-wait (Duration/ofSeconds 5)
-         :thread-tasks [{:t :pool
-                         :duration duration
-                         :join-wait (Duration/ofSeconds 5)
-                         :thread-count threads
-                         :think Duration/ZERO
-                         :pooled-task {:t :pick-weighted
-                                       :choices [[{:t :call, :transaction :get-item, :f (wrap-in-catch proc-get-item)} 12.0]
-                                                 [{:t :call, :transaction :new-user, :f (wrap-in-catch proc-new-user)} 0.5]
-                                                 [{:t :call, :transaction :new-item, :f (wrap-in-catch proc-new-item)} 1.0]
-                                                 [{:t :call, :transaction :new-bid,  :f (wrap-in-catch proc-new-bid)} 2.0]]}}
-                        {:t :freq-job
-                         :duration duration
-                         :freq (Duration/ofMillis (* 0.2 (.toMillis duration)))
-                         :job-task {:t :call, :transaction :index-item-status-groups, :f index-item-status-groups}}]}
+      {:t :concurrently
+       :stage :oltp
+       :duration duration
+       :join-wait (Duration/ofSeconds 5)
+       :thread-tasks [{:t :pool
+                       :duration duration
+                       :join-wait (Duration/ofMinutes 5)
+                       :thread-count threads
+                       :think Duration/ZERO
+                       :pooled-task {:t :pick-weighted
+                                     :choices [[{:t :call, :transaction :get-item, :f proc-get-item} 12.0]
+                                               [{:t :call, :transaction :new-user, :f proc-new-user} 0.5]
+                                               [{:t :call, :transaction :new-item, :f proc-new-item} 1.0]
+                                               [{:t :call, :transaction :new-bid,  :f proc-new-bid} 2.0]]}}
+                      {:t :freq-job
+                       :duration duration
+                       :freq (Duration/ofMillis (* 0.2 (.toMillis duration)))
+                       :job-task {:t :call, :transaction :index-item-status-groups, :f index-item-status-groups}}]}
       (when sync {:t :call,
                   :stage :sync
                   :f sync-call})]}))
-
-(comment
-  (require '[core2.api]
-           '[dev])
-
-  (do
-    (dev/halt)
-    (dev/delete-directory-recursive (io/file "dev/dev-node"))
-    (dev/go))
-
-  (defn install-tx-fns [node fns]
-    (->> (for [[id fn-def] fns]
-           [:put {:id id, :fn #c2/clj-form fn-def}])
-         (c2/submit-tx node)))
-
-  (do
-    (install-tx-fns dev/node {:apply-seller-fee tx-fn-apply-seller-fee, :new-bid tx-fn-new-bid})
-    (def worker (let [clock (Clock/systemUTC)
-                      domain-state (ConcurrentHashMap.)
-                      custom-state (ConcurrentHashMap.)
-                      root-random (Random. 0)
-                      reports (atom [])
-                      worker (b2/->Worker dev/node root-random domain-state custom-state clock reports)
-                      start-ms (System/currentTimeMillis)]
-                  worker))
-
-    (def sf 0.01))
-
-  (do
-    (bcore2/generate worker generate-region 75)
-    (load-categories-tsv worker)
-    (bcore2/generate worker generate-category 16908 )
-    (bcore2/generate worker generate-user  (* sf 1e6) )
-    (bcore2/generate worker generate-user-attributes (* sf 1e6 1.3) )
-    (bcore2/generate worker generate-item (* sf 1e6 10) ))
-
-  ((wrap-in-logging proc-get-item) worker)
-  ((wrap-in-logging proc-new-user) worker)
-  ((wrap-in-logging proc-new-item) worker)
-  ((wrap-in-logging proc-new-bid) worker)
-  ((wrap-in-catch index-item-status-groups))
-
-  (def output-file (io/file "problem-data.edn"))
-
-  (do
-    (bcore2/generate-to-file worker generate-region 75 output-file)
-    (load-categories-tsv worker)
-    (bcore2/generate-to-file worker generate-category 16908 output-file)
-    (bcore2/generate-to-file worker generate-user  (* sf 1e6) output-file)
-    (bcore2/generate-to-file worker generate-user-attributes (* sf 1e6 1.3) output-file)
-    (bcore2/generate-to-file worker generate-item (* sf 1e6 10) output-file))
-
-  (require '[clojure.instant :refer [read-instant-timestamp]])
-  (def reader-map {'time/instant #'read-instant-timestamp})
-
-  (defn read-edns [file]
-    (->> (slurp file)
-         clojure.string/split-lines
-         (map #(clojure.edn/read-string {:readers reader-map} %))))
-
-  (def problem-data (read-edns (io/file "problem-data.edn")))
-  (count problem-data)
-  ;; => 219949
-
-  (count (filter (comp #{:item} :_table) problem-data))
-
-  (defn submit-in-chunks [node doc-seq]
-    (doseq [chunk (partition-all 512 doc-seq)]
-      (c2/submit-tx node (map #(vector :put %) chunk))))
-
-  (submit-in-chunks dev/node problem-data)
-
-
-
-
-  (let [alphabet (vec "abcdefghijklmnopqrstuvwxyz0123456789")]
-    (defn rand-str
-      "Generate a random string of length l"
-      [l]
-      (loop [n l res (transient [])]
-        (if (zero? n)
-          (apply str (persistent! res))
-          (recur (dec n) (conj! res (alphabet (rand-int 36))))))))
-
-  (def rng (Random. 0))
-
-  (defn random-str
-    ([] (random-str 1 100))
-    ([min-len max-len]
-     (let [
-           len (max 0 (+ min-len (.nextInt rng max-len)))
-           buf (byte-array (* 2 len))
-           _ (.nextBytes rng buf)]
-       (.toString (BigInteger. 1 buf) 16))))
-
-  (random-str )
-
-  (do (def cnt (atom 0))
-      (defn generate-item2 []
-        (let [i_id (swap! cnt inc) #_(b2/increment worker item-id)
-              i_u_id 0 #_(b2/sample-flat worker user-id)
-              i_c_id (random-str) #_(sample-category-id worker)]
-          (when i_u_id
-            {:id i_id
-             :_table :item
-             :i_u_id i_u_id
-             :i_c_id i_c_id
-             :i_name  (random-str 6 32)
-             :i_description  (random-str 50 255)
-             :i_user_attributes  (random-str 20 255)
-             :i_initial_price 12.0 #_(random-price worker)
-             :i_current_price 12.0 #_(random-price worker)
-             :i_num_bids 0
-             :i_num_images 0
-             :i_num_global_attrs 0
-             :i_start_date (Instant/now) #_(b2/current-timestamp worker)
-             :i_end_date (.plus ^Instant (Instant/now) (Duration/ofDays 32))}))))
-
-
-  (defn generate
-    ([node f n]
-     (let [doc-seq (remove nil? (repeatedly (long n) f))
-           partition-count 512]
-       (->> (partition-all partition-count doc-seq)
-            (map #(c2/submit-tx node (mapv (partial vector :put) %)))
-            last))))
-
-  (generate dev/node generate-item 100000)
-
-  (c2/datalog-query dev/node '{:find [id]
-                               :where [#_[id :_table :foo]
-                                       [id :_table :some-table]
-                                       [id :some-non-exisiting-attr my-attr]]})
-
-
-  )
