@@ -1,20 +1,17 @@
 (ns core2.bench.core2
-  (:require
-   [clojure.java.io :as io]
-   [clojure.tools.logging :as log]
-   [core2.api :as c2]
-   [core2.bench :as b]
-   [core2.bench.measurement :as bm]
-   [core2.node :as node]
-   [core2.test-util :as tu])
-  (:import
-   (java.nio.file Path)
-   (io.micrometer.core.instrument MeterRegistry Tag Timer)
-   (java.io Closeable File)
-   (java.time Clock Duration)
-   (java.util Random)
-   (java.util.concurrent ConcurrentHashMap Executors)
-   (java.util.concurrent.atomic AtomicLong)))
+  (:require [clojure.java.io :as io]
+            [core2.api :as c2]
+            [core2.bench :as b]
+            [core2.bench.measurement :as bm]
+            [core2.node :as node]
+            [core2.test-util :as tu])
+  (:import (java.nio.file Path)
+           (io.micrometer.core.instrument MeterRegistry Tag Timer)
+           (java.io Closeable File)
+           (java.time Clock Duration)
+           (java.util Random)
+           (java.util.concurrent ConcurrentHashMap Executors)
+           (java.util.concurrent.atomic AtomicLong)))
 
 (set! *warn-on-reflection* false)
 
@@ -186,7 +183,6 @@
                       benchmark
                       ;; @(requiring-resolve `core2.bench.measurement/wrap-task)
                       (fn [task f] (wrap-task task f)))]
-
     (with-open [node (tu/->local-node node-opts)]
       (benchmark-fn node))))
 
@@ -214,38 +210,35 @@
         worker (b/->Worker node root-random domain-state custom-state clock reports)]
     worker))
 
-
 (comment
   ;; ======
   ;; Running in process
   ;; ======
 
-  (require 'dev
-           '[core2.api :as c2]
+  (require '[core2.api :as c2]
            '[core2.node :as node])
-
-  (do
-    (dev/halt)
-    (dev/go)
-    (c2/status dev/node))
 
   (def run-duration "PT5S")
   (def run-duration "PT10S")
+  (def run-duration "PT30S")
   (def run-duration "PT2M")
   (def run-duration "PT10M")
 
-  (delete-directory-recursive (io/file "dev/dev-node2"))
+  (def node-dir (io/file "dev/dev-node"))
+  (delete-directory-recursive node-dir)
+
+  ;; comment out the different phases in auctionmark.clj
+  ;; setup or only run
 
   (def report-core2
     (run-benchmark
-     {:node-opts {:node-dir (.toPath (io/file "dev/dev-node2"))}
+     {:node-opts {:node-dir (.toPath node-dir)}
       :benchmark-type :auctionmark
       :benchmark-opts {:duration run-duration :sync true
                        :scale-factor 0.1 :threads 8}}))
 
-  (->> report-core2-1 :metrics (filter #(clojure.string/starts-with? (:id %) "node" )))
-
-  (def report-rocks (clojure.edn/read-string (slurp (io/file "../xtdb/core1-rocks-10s.edn"))))
+  (spit (io/file "core2-30s.edn") report-core2)
+  (def report-core2 (clojure.edn/read-string (slurp (io/file "core2-30s.edn"))))
 
   (require 'core2.bench.report)
   (core2.bench.report/show-html-report
@@ -253,227 +246,64 @@
     "core2"
     report-core2))
 
+  (def report-rocks (clojure.edn/read-string (slurp (io/file "../xtdb/core1-rocks-30s.edn"))))
+
   (core2.bench.report/show-html-report
    (core2.bench.report/vs
     "core2"
-    report-core2-2m
+    report-core2
     "rocks"
-    report-rocks-2m))
+    report-rocks))
 
-  (spit (io/file "core2-10s.edn") report-core2)
-  (def report-slurped (clojure.edn/read-string (slurp (io/file "core2-10s.edn"))))
-  (keys report-slurped)
+  ;;;;;;;;;;;;;
+  ;; testing single point queries
+  ;;;;;;;;;;;;;
 
+  (def node (node/start-node (node-dir->config node-dir)))
+  (.close node)
+  (tu/finish-chunk node)
 
-  (tu/with-tmp-dirs #{node-dir}
-    (def report1-rocks
-      (run-benchmark
-       {:node-opts {:node-dir node-dir}
-        :benchmark-type :auctionmark
-        :benchmark-opts {:duration run-duration}})))
+  (def get-item-query '{:find [i_id i_u_id i_initial_price i_current_price]
+                        :in [i_id]
+                        :where [[?i :_table :item]
+                                [?i :i_id i_id]
+                                [?i :i_status :open]
+                                [?i :i_u_id i_u_id]
+                                [?i :i_initial_price i_initial_price]
+                                [?i :i_current_price i_current_price]]})
+  ;; better ra for the above
+  (def ra-query
+    '[:scan
+      item
+      [{i_status (= i_status :open)}
+       i_u_id
+       {application_time_start
+        (<= application_time_start (current-timestamp))}
+       {application_time_end
+        (> application_time_end (current-timestamp))}
+       i_current_price
+       i_initial_price
+       {i_id (= i_id ?i_id)}
+       id]])
 
-  (def report1-rocks
-    (run-benchmark
-     {:node-opts {:index :rocks, :log :rocks, :docs :rocks}
-      :benchmark-type :auctionmark
-      :benchmark-opts {:duration run-duration}}))
+  (def open-ids (->> (c2/datalog-query node '{:find [i]
+                                              :where [[i :_table :item]
+                                                      [i :i_status :open]
+                                                      #_[j :i_status ]]})
+                     (map :i)))
 
+  (def rand-seq (shuffle open-ids))
 
-  (def report1-lmdb
-    (run-benchmark
-     {:node-opts {:index :lmdb, :log :lmdb, :docs :lmdb}
-      :benchmark-type :auctionmark
-      :benchmark-opts {:duration run-duration}}))
+  (def q  (fn [open-id]
+            (tu/query-ra ra-query {:srcs {'$ @(node/snapshot-async node)}
+                                   :params {'?i_id open-id}})))
+  ;; ra query
+  (time
+   (tu/with-allocator
+     #(doseq [id (take (* 1000) rand-seq)]
+        (q id))))
 
-  (xtdb.bench2.report/show-html-report
-   (xtdb.bench2.report/vs
-    "Rocks"
-    report1-rocks
-    "LMDB"
-    report1-lmdb))
-
-  ;; ======
-  ;; TPC-H (temporary while I think)
-  ;; ======
-  (def sf 0.05)
-
-  (def report-tpch-rocks
-    (run-benchmark
-     {:node-opts {:index :rocks, :log :rocks, :docs :rocks}
-      :benchmark-type :tpch
-      :benchmark-opts {:scale-factor sf}}))
-
-  (def report-tpch-lmdb
-    (run-benchmark
-     {:node-opts {:index :lmdb, :log :lmdb, :docs :lmdb}
-      :benchmark-type :tpch
-      :benchmark-opts {:scale-factor sf}}))
-
-  (xtdb.bench2.report/show-html-report
-   (xtdb.bench2.report/vs
-    "Rocks"
-    report-tpch-rocks
-    "LMDB"
-    report-tpch-lmdb))
-
-  ;; ======
-  ;; Running in EC2
-  ;; ======
-
-  ;; step 1 build system-under-test .jar
-  (def jar-file (build-jar {:version "1.22.0", :modules [:lmdb :rocks]}))
-
-  ;; make jar available to download for ec2 nodes
-  (def jar-hash (s3-upload-jar jar-file))
-  ;; the path to the jar in s3 is given by its hash string
-  (s3-jar-path jar-hash)
-
-  ;; step 2 provision resources
-  (def ec2-stack-id (str "bench-" (System/currentTimeMillis)))
-  (def ec2-stack (ec2/provision ec2-stack-id {:instance "t3.small"}))
-  (def ec2 (ec2/handle ec2-stack))
-
-  ;; step 3 setup ec2 for running core1 benchmarks
-  (ec2-setup ec2)
-  ;; download the jar
-  (ec2-get-jar ec2 jar-hash)
-  ;; activate this hash (you could grab more than one jar and put it on the box)
-  (ec2-use-jar ec2 jar-hash)
-
-  ;; step 4 run your benchmark
-  (def report-s3-path (format "s3://xtdb-bench/b2/report/%s.edn" ec2-stack-id))
-
-  ;; todo java opts
-  (ec2-run-benchmark
-   ec2
-   {:run-benchmark-opts
-    {:node-opts {:index :rocks, :log :rocks, :docs :rocks}
-     :benchmark-type :auctionmark
-     :benchmark-opts {:duration run-duration}}
-    :report-s3-path report-s3-path})
-
-  ;; step 5 get your report
-
-  (def report-file (File/createTempFile "report" ".edn"))
-
-  (bt/aws "s3" "cp" report-s3-path (.getAbsolutePath report-file))
-
-  (def report2 (edn/read-string (slurp report-file)))
-
-  ;; step 6 visualise your report
-
-  (require 'xtdb.bench2.report)
-  (xtdb.bench2.report/show-html-report
-   (xtdb.bench2.report/vs
-    "Report2"
-    report2))
-
-  ;; compare to the earlier in-process report (now imagine running on n nodes with different configs)
-  (xtdb.bench2.report/show-html-report
-   (xtdb.bench2.report/vs
-    "On laptop"
-    report1-rocks
-    "In EC2"
-    report2))
-
-  ;; filter reports to just :oltp stage
-  (let [filter-report #(xtdb.bench2.report/stage-only % :oltp)
-        report1 (filter-report report1-rocks)
-        report2 (filter-report report2)]
-    (xtdb.bench2.report/show-html-report
-     (xtdb.bench2.report/vs
-      "On laptop"
-      report1
-      "In EC2"
-      report2)))
-
-
-  ;; here is a bigger script comparing a couple of versions
-
-  ;; run 1-21-0
-  (def report-1-21-0-path (new-s3-report-path))
-
-  ;; build
-  (do
-    (def jar-1-21-0 (s3-upload-jar (build-jar {:version "1.21.0", :modules [:rocks]})))
-    (ec2-get-jar ec2 jar-1-21-0))
-
-  ;; run
-  (do
-    (ec2-use-jar ec2 jar-1-21-0)
-    (ec2-run-benchmark
-     ec2
-     {:env {"MALLOC_ARENA_MAX" 2}
-      :java-opts ["--add-opens java.base/java.util.concurrent=ALL-UNNAMED"]
-      :run-benchmark-opts
-      {:node-opts {:index :rocks, :log :rocks, :docs :rocks}
-       :benchmark-type :auctionmark
-       :benchmark-opts {:duration run-duration}}
-      :report-s3-path report-1-21-0-path})
-
-    (def report-1-21-0-file (File/createTempFile "report" ".edn"))
-    (bt/aws "s3" "cp" report-1-21-0-path (.getAbsolutePath report-1-21-0-file))
-    (def report-1-21-0 (edn/read-string (slurp report-1-21-0-file)))
-
-    )
-
-  ;; run 1-22-0
-  (def report-1-22-0-path (new-s3-report-path))
-
-  ;; build
-  (do
-    (def jar-1-22-0 (s3-upload-jar (build-jar {:version "1.22.0", :modules [:rocks]})))
-    (ec2-get-jar ec2 jar-1-22-0))
-
-  ;; run
-  (do
-    (ec2-use-jar ec2 jar-1-22-0)
-    (ec2-run-benchmark
-     ec2
-     {:run-benchmark-opts
-      {:node-opts {:index :rocks, :log :rocks, :docs :rocks}
-       :benchmark-type :auctionmark
-       :benchmark-opts {:duration run-duration}}
-      :report-s3-path report-1-22-0-path})
-    (def report-1-22-0-file (File/createTempFile "report" ".edn"))
-    (bt/aws "s3" "cp" report-1-22-0-path (.getAbsolutePath report-1-22-0-file))
-    (def report-1-22-0 (edn/read-string (slurp report-1-22-0-file))))
-
-  ;; report on both
-  (let [filter-report #(xtdb.bench2.report/stage-only % :oltp)
-        report1 (filter-report report-1-21-0)
-        report2 (filter-report report-1-22-0)]
-    (xtdb.bench2.report/show-html-report
-     (xtdb.bench2.report/vs
-      "1.21.0"
-      report1
-      "1.22.0"
-      report2)))
-
-  ;; ===
-  ;; EC2 misc
-  ;; ===
-  ;; misc tools:
-  ;; you can open a repl if something is wrong (close with .close), right now needs 5555 locally to forward over ssh
-  (def repl (ec2-repl ec2))
-  (.close repl)
-
-  ;; if you lose a handle get it again from the stack
-  (def ec2 (ec2/handle (ec2/cfn-stack-describe ec2-stack-id)))
-
-  ;; run something over ssh
-  (ec2/ssh ec2 "ls" "-la")
-
-  ;; kill the java process!
-  (kill-java ec2)
-
-  ;; find stacks starting "bench-"
-  (ec2/cfn-stack-ls)
-
-  (doseq [{:strs [StackName]} (ec2/cfn-stack-ls)]
-    (println "run this to delete the stack" (pr-str (list 'ec2/cfn-stack-delete StackName))))
-
-  ;; CLEANUP! delete your node when finished with it
-  (ec2/cfn-stack-delete ec2-stack-id)
-
-  )
+  ;; datalog query
+  (time
+   (doseq [id (take (* 1000 1) (shuffle rand-seq))]
+     (c2/datalog-query node get-item-query id))))
