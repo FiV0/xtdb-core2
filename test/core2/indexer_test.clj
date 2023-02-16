@@ -498,6 +498,24 @@
               (t/is (= 2 (count (filter #(re-matches #"chunk-\p{XDigit}+/device-info/content-api-version\.arrow" %) objs))))
               (t/is (= 11 (count (filter #(re-matches #"chunk-\p{XDigit}+/device-readings/content-battery-level\.arrow" %) objs)))))))))))
 
+
+(t/deftest intermittent-failure
+  (let [node-dir (util/->path "target/multiple-nodes-test")
+        node-opts {:node-dir node-dir :max-rows-per-chunk 1000, :max-rows-per-block 100}]
+    (util/delete-dir node-dir)
+    (with-open [node-1 (tu/->local-node (assoc node-opts :buffers-dir "buffers-1"))]
+      (letfn [(submit-ops! [ids]
+                (last (for [tx-ops (->> (for [id ids]
+                                          [:put {:id id,
+                                                 :data (str "data" id)
+                                                 :_table :t1}])
+                                        (partition-all 1000))]
+                        @(c2/submit-tx node-1 tx-ops))))]
+        (let [last-tx-key (submit-ops! (range 100000))]
+          (with-open [node-2 (tu/->local-node (assoc node-opts :buffers-dir "buffers-2"))]
+            (Thread/sleep 1000)
+            (t/is (= last-tx-key (tu/then-await-tx last-tx-key node-2 (Duration/ofSeconds 60))))))))))
+
 (t/deftest can-ingest-ts-devices-mini-with-stop-start-and-reach-same-state
   (let [node-dir (util/->path "target/can-ingest-ts-devices-mini-with-stop-start-and-reach-same-state")
         node-opts {:node-dir node-dir, :max-rows-per-chunk 1000, :max-rows-per-block 100}]
