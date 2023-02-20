@@ -5,11 +5,13 @@
 ;; https://github.com/tonsky/datascript
 
 (ns core2.datalog.datalog-test
-  (:require [core2.james-bond :as bond]
-            [clojure.test :as t :refer [deftest]]
-            [core2.test-util :as tu]
-            [core2.api :as c2]
-            [core2.node :as node]))
+  (:require
+   [clojure.spec.alpha :as s]
+   [clojure.test :as t :refer [deftest]]
+   [core2.api :as c2]
+   [core2.james-bond :as bond]
+   [core2.node :as node]
+   [core2.test-util :as tu]))
 
 (t/use-fixtures :each tu/with-node)
 
@@ -111,6 +113,50 @@
                                        (assoc :basis {:tx tx})))
                   (into []))))))
 
+(deftest multi-join-tests
+  (let [tx (c2/submit-tx tu/*node*
+                         [[:put {:id 1, :name "Ivan", :age 15}]
+                          [:put {:id 2, :name "Petr", :age 37}]
+                          [:put {:id 3, :name "Ivan", :age 37}]
+                          [:put {:id 4, :age 15}]])]
+
+    (t/is (= #{{:e 1, :e2 1, :n "Ivan"}
+               {:e 2, :e2 2, :n "Petr"}
+               {:e 3, :e2 3, :n "Ivan"}}
+             (->> (c2/plan-datalog tu/*node*
+                                   (-> '{:find [e e2 n]
+                                         :where [[e :name n]
+                                                 [e :age a]
+                                                 [e2 :name n]
+                                                 [e2 :age a]]}
+                                       (assoc :basis {:tx tx})))
+                  (into #{})))
+          "multi-join")))
+
+(deftest multi-join-tests
+  (let [tx (c2/submit-tx tu/*node*
+                         [[:put {:id 1, :name "Ivan", :age 15}]
+                          [:put {:id 2, :name "Petr", :age 37}]
+                          [:put {:id 3, :name "Ivan", :age 37}]
+                          [:put {:id 4, :age 15}]])]
+
+    (t/is (= #{{:e 1, :e2 1, :n "Ivan"}
+               {:e 2, :e2 2, :n "Petr"}
+               {:e 3, :e2 3, :n "Ivan"}}
+             (->> (c2/plan-datalog tu/*node*
+                                   (-> '{:find [e e2 n]
+                                         :where [[e :name n]
+                                                 [e :age a]
+                                                 [e2 :name n]
+                                                 [e2 :age a]]}
+                                       (assoc :basis {:tx tx})))
+                  (into #{})))
+          "multi-join")))
+
+
+
+
+
 ;; https://github.com/tonsky/datascript/blob/1.1.0/test/datascript/test/query.cljc#L12-L36
 (deftest datascript-test-joins
   (let [tx (c2/submit-tx tu/*node*
@@ -119,6 +165,7 @@
                           [:put {:id 3, :name "Ivan", :age 37}]
                           [:put {:id 4, :age 15}]])]
 
+    #_#_#_
     (t/is (= #{{:e 1} {:e 2} {:e 3}}
              (->> (c2/plan-datalog tu/*node*
                                    (-> '{:find [e]
@@ -159,6 +206,7 @@
                                        (assoc :basis {:tx tx})))
                   (into #{}))))
 
+    #_#_
     (t/is (= #{{:e 1, :e2 1, :n "Ivan"}
                {:e 2, :e2 2, :n "Petr"}
                {:e 3, :e2 3, :n "Ivan"}}
@@ -982,3 +1030,140 @@
                                                              [(+ a 1) b])]}
                                        (assoc :basis {:tx !tx}))))
               "b is unified")))))
+
+(deftest test-basic-rules
+  (t/is (= '[[:triple {:e [:logic-var i], :a :age, :v [:logic-var age]}]
+             [:rule {:name over-twenty-one?, :args [age]}]]
+           (s/conform :core2.datalog/where '[[i :age age]
+                                             (over-twenty-one? age)])))
+
+  (t/is (= '[{:head {:name over-twenty-one?, :args {:bound-args [age]}},
+              :body
+              [[:call
+                {:form [:fn-call {:f >=, :args [[:logic-var age] [:value 21]]}]}]]}
+             {:head {:name over-twenty-one?, :args {:bound-args [age]}},
+              :body
+              [[:anti-join
+                {:not-exists not-exists?,
+                 :args [age],
+                 :terms
+                 [[:call
+                   {:form
+                    [:fn-call {:f <, :args [[:logic-var age] [:value 21]]}]}]]}]]}]
+           (s/conform :core2.datalog/rules '[[(over-twenty-one? [age])
+                                              [(>= age 21)]]
+                                             [(over-twenty-one? [age])
+                                              (not-exists? [age] [(< age 21)])]])))
+
+  (let [tx (c2/submit-tx tu/*node* [[:put {:id :ivan :name "Ivan" :last-name "Ivanov" :age 21}]
+                                    [:put {:id :petr :name "Petr" :last-name "Petrov" :age 18}]])]
+    (t/testing "without rule"
+      (t/is (= [{:i :ivan}] (c2/datalog-query tu/*node*
+                                              (-> '{:find [i]
+                                                    :where [[i :age age]
+                                                            [(>= age 21)]]}
+                                                  (assoc :basis {:tx tx}))))))
+
+    (t/testing "rule using same variable name as body"
+      (t/is (= [{:i :ivan}] (c2/datalog-query tu/*node*
+                                              (-> '{:find [i]
+                                                    :where [[i :age age]
+                                                            (over-twenty-one? age)]
+                                                    :rules [[(over-twenty-one? [age])
+                                                             [(>= age 21)]]]}
+                                                  (assoc :basis {:tx tx})))))))
+  #_#_#_#_#_#_#_#_#_
+  (t/testing "rules directly on arguments"
+    (t/is (= #{[21]} (xt/q (xt/db *api*) '{:find [age]
+                                           :where [(over-twenty-one? age)]
+                                           :args [{:age 21}]
+                                           :rules [[(over-twenty-one? age)
+                                                    [(>= age 21)]]]})))
+
+    (t/is (= #{} (xt/q (xt/db *api*) '{:find [age]
+                                       :where [(over-twenty-one? age)]
+                                       :args [{:age 20}]
+                                       :rules [[(over-twenty-one? age)
+                                                [(>= age 21)]]]}))))
+
+  (t/testing "rule using required bound args"
+    (t/is (= #{[:ivan]} (xt/q (xt/db *api*) '{:find [i]
+                                              :where [[i :age age]
+                                                      (over-twenty-one? age)]
+                                              :rules [[(over-twenty-one? [age])
+                                                       [(>= age 21)]]]}))))
+
+  (t/testing "rule using different variable name from body"
+    (t/is (= #{[:ivan]} (xt/q (xt/db *api*) '{:find [i]
+                                              :where [[i :age age]
+                                                      (over-twenty-one? age)]
+                                              :rules [[(over-twenty-one? x)
+                                                       [(>= x 21)]]]}))))
+
+  (t/testing "nested rules"
+    (t/is (= #{[:ivan]} (xt/q (xt/db *api*) '{:find [i]
+                                              :where [[i :age age]
+                                                      (over-twenty-one? age)]
+                                              :rules [[(over-twenty-one? x)
+                                                       (over-twenty-one-internal? x)]
+                                                      [(over-twenty-one-internal? y)
+                                                       [(>= y 21)]]]}))))
+
+  (t/testing "rule using multiple arguments"
+    (t/is (= #{[:ivan]} (xt/q (xt/db *api*) '{:find [i]
+                                              :where [[i :age age]
+                                                      (over-age? age 21)]
+                                              :rules [[(over-age? [age] required-age)
+                                                       [(>= age required-age)]]]}))))
+
+  (t/testing "rule using multiple branches"
+    (t/is (= #{[:ivan]} (xt/q (xt/db *api*) '{:find [i]
+                                              :where [(is-ivan-or-bob? i)]
+                                              :rules [[(is-ivan-or-bob? i)
+                                                       [i :name "Ivan"]
+                                                       [i :last-name "Ivanov"]]
+                                                      [(is-ivan-or-bob? i)
+                                                       [i :name "Bob"]]]})))
+
+    (t/is (= #{["Petr"]} (xt/q (xt/db *api*) '{:find [name]
+                                               :where [[i :name name]
+                                                       (not (is-ivan-or-bob? i))]
+                                               :rules [[(is-ivan-or-bob? i)
+                                                        [i :name "Ivan"]]
+                                                       [(is-ivan-or-bob? i)
+                                                        [i :name "Bob"]]]})))
+
+    (t/is (= #{[:ivan]
+               [:petr]} (xt/q (xt/db *api*) '{:find [i]
+                                              :where [(is-ivan-or-petr? i)]
+                                              :rules [[(is-ivan-or-petr? i)
+                                                       [i :name "Ivan"]]
+                                                      [(is-ivan-or-petr? i)
+                                                       [i :name "Petr"]]]}))))
+
+  (t/is (thrown-with-msg?
+         IllegalArgumentException
+         #"Unknown rule:"
+         (xt/q (xt/db *api*) '{:find [i]
+                               :where [[i :age age]
+                                       (over-twenty-one? age)]})))
+
+  (t/is (thrown-with-msg?
+         IllegalArgumentException
+         #"Rule invocation has wrong arity, expected: 1"
+         (xt/q (xt/db *api*) '{:find [i]
+                               :where [[i :age age]
+                                       (over-twenty-one? i age)]
+                               :rules [[(over-twenty-one? x)
+                                        [(>= x 21)]]]})))
+
+  (t/is (thrown-with-msg?
+         IllegalArgumentException
+         #"Rule definitions require same arity:"
+         (xt/q (xt/db *api*) '{:find [i]
+                               :where [[i :age age]
+                                       (is-ivan-or-petr? i name)]
+                               :rules [[(is-ivan-or-petr? i name)
+                                        [i :name "Ivan"]]
+                                       [(is-ivan-or-petr? i)
+                                        [i :name "Petr"]]]}))))

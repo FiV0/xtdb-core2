@@ -21,9 +21,12 @@
 (s/def ::eid eid?)
 (s/def ::value (some-fn eid?))
 
+(def ^:private build-ins (set/union (set (keys (ns-publics (find-ns 'clojure.core))))
+                                    '#{exists? not-exists? union-join q}))
+
 (s/def ::fn-call
   (s/and list?
-         (s/cat :f simple-symbol?
+         (s/cat :f build-ins
                 :args (s/* ::form))))
 
 (s/def ::form
@@ -107,13 +110,32 @@
 (s/def ::sub-query
   (s/cat :q #{'q}, :query ::query))
 
+(s/def ::rule (s/and list? (s/cat :name (s/and simple-symbol? (complement build-ins))
+                                  :args (s/+ any?))))
+
+(s/def ::rule-args (s/cat :bound-args ::args-list
+                          :free-args (s/* ::logic-var)))
+
+(s/def ::rule-head
+  (s/and list?
+         (s/cat :name (s/and simple-symbol? (complement build-ins))
+                :args ::rule-args)))
+
+(s/def ::rule-definition
+  (s/and vector?
+         (s/cat :head ::rule-head
+                :body (s/+ ::term))))
+
+(s/def ::rules (s/coll-of ::rule-definition :kind vector? :min-count 1))
+
 (s/def ::term
   (s/or :triple ::triple
         :semi-join ::semi-join
         :anti-join ::anti-join
         :union-join ::union-join
         :call ::call-clause
-        :sub-query ::sub-query))
+        :sub-query ::sub-query
+        :rule ::rule))
 
 (s/def ::where
   (s/coll-of ::term :kind vector? :min-count 1))
@@ -130,7 +152,8 @@
 
 (s/def ::query
   (s/keys :req-un [::find]
-          :opt-un [::keys ::in ::where ::order-by ::offset ::limit]))
+          :opt-un [::keys ::in ::where ::order-by ::offset ::limit ::rules]))
+
 
 (s/def ::relation-arg
   (s/or :maps (s/coll-of (s/map-of simple-keyword? any?))
@@ -510,6 +533,11 @@
 
     (mega-join (into [plan] sub-queries) param-vars)))
 
+(defn- plan-rule-query [])
+
+(defn- wrap-rule-query [])
+
+
 (defn- plan-body [{where-clauses :where, apply-mapping ::apply-mapping, :as query}]
   (let [in-rels (plan-in-tables query)
         {::keys [param-vars]} (meta in-rels)
@@ -563,6 +591,21 @@
 
                        unavailable-calls unavailable-sqs
                        unavailable-ujs unavailable-sjs unavailable-ajs)))))))))
+
+(comment
+  #_#_:where
+  [[e :bar "bar"]
+   (or-join [e]
+            [e :foo "foo"])
+   #_(not-join [e]
+               [[e :foo "foo"]
+                #_(> e 2)])]
+
+
+
+
+  )
+
 
 ;; HACK these are just the grouping-fns used in TPC-H
 ;; - we're going to want a better way to recognise them
