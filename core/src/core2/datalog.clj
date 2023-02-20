@@ -113,7 +113,8 @@
 (s/def ::rule (s/and list? (s/cat :name (s/and simple-symbol? (complement build-ins))
                                   :args (s/+ any?))))
 
-(s/def ::rule-args (s/cat :bound-args ::args-list
+;; TODO add check of at least one arg
+(s/def ::rule-args (s/cat :bound-args (s/coll-of ::logic-var, :kind vector?)
                           :free-args (s/* ::logic-var)))
 
 (s/def ::rule-head
@@ -454,7 +455,8 @@
   (let [{sj-required-vars :required-vars} (term-vars [sj-type sj])
         required-vars (if (seq sj-required-vars) (set args) #{})
         apply-mapping (->apply-mapping required-vars)]
-
+    (prn :required-vars required-vars)
+    (prn :apply-mapping apply-mapping)
     (-> (plan-query
          (cond-> {:find (vec (for [arg args]
                                [:logic-var arg]))
@@ -832,7 +834,7 @@
                  #_(doto clojure.pprint/pprint)
                  #_(->> (binding [*print-meta* true]))
                  (lp/rewrite-plan {})
-                 #_(doto clojure.pprint/pprint)
+                 (doto clojure.pprint/pprint)
                  (doto (lp/validate-plan)))
 
         ^core2.operator.PreparedQuery pq (.computeIfAbsent prepare-ra-cache

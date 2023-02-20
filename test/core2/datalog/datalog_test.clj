@@ -1031,6 +1031,33 @@
                                        (assoc :basis {:tx !tx}))))
               "b is unified")))))
 
+(s/explain :core2.datalog/query
+           '{:find [age]
+             :where [(over-twenty-one? age)]
+             :in [age]
+             :rules [[(over-twenty-one? age)
+                      [(>= age 21)]]]})
+
+(comment
+  ;; age  id
+  ;;  2    a
+  ;;  3    b
+  ;;  4    c
+
+  ;; result
+  ;; a 2 b
+  ;; a 2 c
+  ;; b 3 c
+
+  '{:find [i age u]
+    :where [(older-users age u)
+            [i :age age]]
+    :rules [[(older-users [age] u)
+             [[u :age age2]
+              (> age2 age)]]]}
+  )
+
+
 (deftest test-basic-rules
   (t/is (= '[[:triple {:e [:logic-var i], :a :age, :v [:logic-var age]}]
              [:rule {:name over-twenty-one?, :args [age]}]]
@@ -1057,53 +1084,71 @@
 
   (let [tx (c2/submit-tx tu/*node* [[:put {:id :ivan :name "Ivan" :last-name "Ivanov" :age 21}]
                                     [:put {:id :petr :name "Petr" :last-name "Petrov" :age 18}]])]
+
     (t/testing "without rule"
       (t/is (= [{:i :ivan}] (c2/datalog-query tu/*node*
                                               (-> '{:find [i]
                                                     :where [[i :age age]
                                                             [(>= age 21)]]}
                                                   (assoc :basis {:tx tx}))))))
+    #_
+    (t/is (= [{:i :ivan}]
+             (c2/datalog-query tu/*node*
+                               (-> '{:find [i]
+                                     :where [[i :age age]
+                                             (exists? [age]
+                                                      [(>= age 21)])]}
+                                   (assoc :basis {:tx tx}))))
 
-    #_(t/is (= [{:i :ivan}]
-               (c2/datalog-query tu/*node*
-                                 (-> '{:find [i]
-                                       :where [[i :age age]
-                                               (exists? [age]
-                                                        [(>= age 21)])]}
-                                     (assoc :basis {:tx tx}))))
-
-            "find people who have children")
+          "find people who have children")
 
 
-    (t/testing "rule using same variable name as body"
+    (t/testing "rule using required bound args"
       (t/is (= [{:i :ivan}] (c2/datalog-query tu/*node*
                                               (-> '{:find [i]
                                                     :where [[i :age age]
                                                             (over-twenty-one? age)]
                                                     :rules [[(over-twenty-one? [age])
                                                              [(>= age 21)]]]}
-                                                  (assoc :basis {:tx tx})))))))
-  #_#_#_#_#_#_#_#_#_
-  (t/testing "rules directly on arguments"
-    (t/is (= #{[21]} (xt/q (xt/db *api*) '{:find [age]
-                                           :where [(over-twenty-one? age)]
-                                           :args [{:age 21}]
-                                           :rules [[(over-twenty-one? age)
-                                                    [(>= age 21)]]]})))
+                                                  (assoc :basis {:tx tx}))))))
 
-    (t/is (= #{} (xt/q (xt/db *api*) '{:find [age]
-                                       :where [(over-twenty-one? age)]
-                                       :args [{:age 20}]
-                                       :rules [[(over-twenty-one? age)
-                                                [(>= age 21)]]]}))))
+    (t/testing "rules directly on arguments"
+      (t/is (= [{:age 21}] (c2/datalog-query tu/*node*
+                                             (-> '{:find [age]
+                                                   :where [(over-twenty-one? age)]
+                                                   :in [age]
+                                                   :rules [[(over-twenty-one? [age])
+                                                            [(>= age 21)]]]}
+                                                 (assoc :basis {:tx tx}))
+                                             21)))
 
-  (t/testing "rule using required bound args"
-    (t/is (= #{[:ivan]} (xt/q (xt/db *api*) '{:find [i]
-                                              :where [[i :age age]
-                                                      (over-twenty-one? age)]
-                                              :rules [[(over-twenty-one? [age])
-                                                       [(>= age 21)]]]}))))
+      (t/is (= [] (c2/datalog-query tu/*node*
+                                    (-> '{:find [age]
+                                          :where [(over-twenty-one? age)]
+                                          :in [age]
+                                          :rules [[(over-twenty-one? [age age2] age3)
+                                                   [(>= age 21)]]]}
+                                        (assoc :basis {:tx tx}))
+                                    20))))
 
+    #_(t/testing "rule using same variable name as body"
+        (t/is (= [{:i :ivan}] (c2/datalog-query tu/*node*
+                                                (-> '{:find [i]
+                                                      :where [[i :age age]
+                                                              (over-twenty-one? age)]
+                                                      :rules [[(over-twenty-one? age)
+                                                               [(>= age 21)]]]}
+                                                    (assoc :basis {:tx tx})))))))
+
+
+  #_(s/explain :core2.datalog/query '{:find [i]
+                                      :where [[i :age age]
+                                              (over-twenty-one? age)]
+                                      :rules [[(over-twenty-one? age)
+                                               [(>= age 21)]]]})
+
+
+  #_#_#_#_#_#_#_
   (t/testing "rule using different variable name from body"
     (t/is (= #{[:ivan]} (xt/q (xt/db *api*) '{:find [i]
                                               :where [[i :age age]
