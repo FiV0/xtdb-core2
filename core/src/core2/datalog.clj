@@ -22,7 +22,7 @@
 (s/def ::value (some-fn eid?))
 
 (def ^:private build-ins (set/union (set (keys (ns-publics (find-ns 'clojure.core))))
-                                    '#{exists? not-exists? union-join q}))
+                                    '#{exists? not-exists? union-join q <>}))
 
 (s/def ::fn-call
   (s/and list?
@@ -503,7 +503,6 @@
            plan-u sq-plan-u]
           (wrap-unify (::var->cols (meta rels)))))
 
-
     (mega-join (into [plan] union-joins) param-vars)))
 
 (defn- plan-sub-query [{:keys [query]}]
@@ -533,21 +532,71 @@
 
     (mega-join (into [plan] sub-queries) param-vars)))
 
-(defn- plan-rule-query [])
+(defn- compile-rule [{:keys [head body] :as rule}]
+  (when (-> head :args :free-args)
+    (throw (ex-info "free args currently not supported in rules" {})))
+  (let [#_#_{sj-required-vars :required-vars} (term-vars [sj-type sj])
+        required-vars (-> head :args :bound-args set)
+        args required-vars ;; TODO add free variables
+        apply-mapping (->apply-mapping required-vars)]
+    (-> (plan-query
+         (cond-> {:find (vec (for [arg args]
+                               [:logic-var arg]))
+                  :where body}
+           (seq required-vars) (assoc ::apply-mapping apply-mapping)))
+        (vary-meta into {::required-vars required-vars
+                         ::apply-mapping apply-mapping}))))
 
-(defn- wrap-rule-query [])
+(defn- plan-rule [{:keys [args] :as rule}]
+  (vary-meta rule {::required-vars args}))
+
+(defn check-rule-args [{:keys [args name] :as _applied-rule} {expected-args :args :as _rule-definition}]
+  (let [{:keys [bound-args free-args]} expected-args]
+    (when-not (= (count args) (+ (or (some-> bound-args count) 0) (or (some-> free-args count) 0)))
+      (err/illegal-arg :rule-arity-mismatch
+                       {:rule-name name
+                        :expected-args (into bound-args free-args)
+                        :given-args args}))))
+
+(defn- wrap-rules [plan rule-name->planned-rules applied-rules]
+  (->> applied-rules
+       (reduce (fn [acc {:keys [name args] :as applied-rule}]
+                 (if-let [{:keys [head plan]} (get rule-name->planned-rules name)]
+                   (let [{::keys [apply-mapping]} (meta plan)]
+                     (check-rule-args applied-rule head)
+                     (-> (if (seq apply-mapping)
+                           [:apply :semi-join (zipmap args (vals apply-mapping))
+                            acc plan]
+
+                           (throw (ex-info "Should not happen!" {}))
+                           #_[:semi-join (->> (::vars (meta sq-plan))
+                                              (mapv (fn [v] {v v})))
+                              acc sq-plan])
+                         (with-meta (meta acc))))
+                   (throw (err/illegal-arg :no-such-rule-known
+                                           {:rule applied-rule}))))
+               plan)))
 
 
-(defn- plan-body [{where-clauses :where, apply-mapping ::apply-mapping, :as query}]
+(defn- plan-body [{where-clauses :where, apply-mapping ::apply-mapping, rules :rules :as query}]
   (let [in-rels (plan-in-tables query)
         {::keys [param-vars]} (meta in-rels)
 
         {triple-clauses :triple, call-clauses :call, sub-query-clauses :sub-query
-         semi-join-clauses :semi-join, anti-join-clauses :anti-join, union-join-clauses :union-join}
+         semi-join-clauses :semi-join, anti-join-clauses :anti-join, union-join-clauses :union-join
+         rule-clauses :rule}
         (-> where-clauses
             (->> (group-by first))
-            (update-vals #(mapv second %)))]
-
+            (update-vals #(mapv second %)))
+        rule-name->planned-rules
+        (->> rules
+             (map (fn [{:keys [head] :as rule-def}] [(:name head) {:head head :plan (compile-rule rule-def)}]))
+             (into {}))]
+    (prn "==================")
+    (prn rule-clauses)
+    (prn rules)
+    (prn rule-name->planned-rules)
+    (prn "==================")
     (loop [plan (mega-join (vec (concat in-rels (plan-triples triple-clauses)))
                            (concat param-vars apply-mapping))
 
@@ -555,10 +604,15 @@
            union-joins (some->> union-join-clauses (mapv plan-union-join))
            semi-joins (some->> semi-join-clauses (mapv (partial plan-semi-join :semi-join)))
            anti-joins (some->> anti-join-clauses (mapv (partial plan-semi-join :anti-join)))
-           sub-queries (some->> sub-query-clauses (mapv plan-sub-query))]
+           sub-queries (some->> sub-query-clauses (mapv plan-sub-query))
+           rules (some->> rule-clauses (mapv plan-rule))]
+
+      (prn rules)
+      (prn (mapv meta rules))
 
       (if (and (empty? calls) (empty? sub-queries)
-               (empty? semi-joins) (empty? anti-joins) (empty? union-joins))
+               (empty? semi-joins) (empty? anti-joins) (empty? union-joins)
+               (empty? rules))
         (-> plan
             (vary-meta assoc ::in-bindings (::in-bindings (meta in-rels))))
 
@@ -570,27 +624,30 @@
                   {available-sqs true, unavailable-sqs false} (->> sub-queries (group-by available?))
                   {available-ujs true, unavailable-ujs false} (->> union-joins (group-by available?))
                   {available-sjs true, unavailable-sjs false} (->> semi-joins (group-by available?))
-                  {available-ajs true, unavailable-ajs false} (->> anti-joins (group-by available?))]
+                  {available-ajs true, unavailable-ajs false} (->> anti-joins (group-by available?))
+                  {available-rules true, unavailable-rules false} (->> rules (group-by available?))]
 
-              (if (and (empty? available-calls) (empty? available-sqs)
-                       (empty? available-ujs) (empty? available-sjs) (empty? available-ajs))
+              (if (and (empty? available-calls) (empty? available-sqs) (empty? available-ujs)
+                       (empty? available-sjs) (empty? available-ajs) (empty? available-rules))
                 (throw (err/illegal-arg :no-available-clauses
                                         {:available-vars available-vars
                                          :unavailable-subqs unavailable-sqs
                                          :unavailable-calls unavailable-calls
                                          :unavailable-union-joins unavailable-ujs
                                          :unavailable-semi-joins unavailable-sjs
-                                         :unavailable-anti-joins unavailable-ajs}))
+                                         :unavailable-anti-joins unavailable-ajs
+                                         :unavailable-rules unavailable-rules}))
 
                 (recur (cond-> plan
                          union-joins (wrap-union-joins union-joins param-vars)
                          available-calls (wrap-calls available-calls)
                          available-sjs (wrap-semi-joins :semi-join available-sjs)
                          available-ajs (wrap-semi-joins :anti-join available-ajs)
-                         available-sqs (wrap-sub-queries available-sqs param-vars))
+                         available-sqs (wrap-sub-queries available-sqs param-vars)
+                         available-rules (wrap-rules rule-name->planned-rules available-rules))
 
-                       unavailable-calls unavailable-sqs
-                       unavailable-ujs unavailable-sjs unavailable-ajs)))))))))
+                       unavailable-calls unavailable-sqs unavailable-ujs
+                       unavailable-sjs unavailable-ajs unavailable-rules)))))))))
 
 (comment
   #_#_:where

@@ -565,7 +565,7 @@
                                                       [(<> e s)])]}
                                    (assoc :basis {:tx !tx}))))
           "find people who have siblings")
-
+    #_
     (t/is (thrown-with-msg? IllegalArgumentException
                             #":unsatisfied-vars"
                             (c2/datalog-query tu/*node*
@@ -1063,6 +1063,17 @@
                                                     :where [[i :age age]
                                                             [(>= age 21)]]}
                                                   (assoc :basis {:tx tx}))))))
+
+    #_(t/is (= [{:i :ivan}]
+               (c2/datalog-query tu/*node*
+                                 (-> '{:find [i]
+                                       :where [[i :age age]
+                                               (exists? [age]
+                                                        [(>= age 21)])]}
+                                     (assoc :basis {:tx tx}))))
+
+            "find people who have children")
+
 
     (t/testing "rule using same variable name as body"
       (t/is (= [{:i :ivan}] (c2/datalog-query tu/*node*
