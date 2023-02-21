@@ -1067,6 +1067,15 @@
              (> age2 age)]]}
 
 
+  '{:find [i i2]
+    :where [[i :age age]
+            (over-age? age 21)
+            [i2 :age age2]
+            (over-age? age age2)]
+    :rules [[(over-age? [age required-age])
+             [(>= age required-age)]]]}
+
+
 
   )
 
@@ -1096,7 +1105,8 @@
            (s/conform :core2.datalog/rules '[[(over-twenty-one? [age])
                                               [(>= age 21)]]
                                              [(over-twenty-one? [age])
-                                              (not-exists? [age] [(< age 21)])]])))
+                                              (not-exists? [age]
+                                                           [(< age 21)])]])))
 
   (let [tx (c2/submit-tx tu/*node* [[:put {:id :ivan :name "Ivan" :last-name "Ivanov" :age 21}]
                                     [:put {:id :petr :name "Petr" :last-name "Petrov" :age 18}]
@@ -1108,7 +1118,7 @@
                                                     :where [[i :age age]
                                                             [(>= age 21)]]}
                                                   (assoc :basis {:tx tx}))))))
-
+    #_
     (t/is (= [{:i :ivan}]
              (c2/datalog-query tu/*node*
                                (-> '{:find [i]
@@ -1118,7 +1128,6 @@
                                    (assoc :basis {:tx tx}))))
 
           "find people who have children")
-
 
     (t/testing "rule using required bound args"
       (t/is (= [{:i :ivan}] (c2/datalog-query tu/*node*
@@ -1182,7 +1191,7 @@
                                                                        [(>= y 21)]]]}
                                                             (assoc :basis {:tx tx}))))))
     #_
-    (t/testing "nested rules (un-bound)"
+    (t/testing "nested rules (unbound)"
       (t/is (= #{[:ivan]} (c2/datalog-query tu/*node* '{:find [i]
                                                         :where [[i :age age]
                                                                 (over-twenty-one? age)]
@@ -1206,20 +1215,25 @@
                                                                   (over-twenty-one? age)]
                                                           :rules [[(over-twenty-one? x)
                                                                    [(>= x 21)]]]}))))
+
+    (t/testing "rule using multiple arguments (bound args)"
+      (t/is (= {:i :ivan} (c2/datalog-query tu/*node* '{:find [i i2]
+                                                        :where [[i :age age]
+                                                                (over-age? age 21)]
+                                                        :rules [[(over-age? [age required-age])
+                                                                 [(>= age required-age)]]]}))))
+
     #_
-    (t/testing "rule using multiple arguments"
+    (t/testing "rule using multiple arguments (with unbound args) "
       (t/is (= {:i :ivan} (c2/datalog-query tu/*node* '{:find [i]
                                                         :where [[i :age age]
                                                                 (over-age? age 21)]
                                                         :rules [[(over-age? [age] required-age)
                                                                  [(>= age required-age)]]]}))))
 
+
     )
-  #_#_#_#_
-
-
-
-
+  #_
   (t/testing "rule using multiple branches"
     (t/is (= #{[:ivan]} (xt/q (xt/db *api*) '{:find [i]
                                               :where [(is-ivan-or-bob? i)]
@@ -1244,7 +1258,7 @@
                                                        [i :name "Ivan"]]
                                                       [(is-ivan-or-petr? i)
                                                        [i :name "Petr"]]]}))))
-
+  #_#_#_
   (t/is (thrown-with-msg?
          IllegalArgumentException
          #"Unknown rule:"

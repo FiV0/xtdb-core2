@@ -210,22 +210,22 @@
 
 (defn- with-unique-cols [plans param-vars]
   (as-> plans plans
-    (->> plans
-         (into [] (map-indexed
-                   (fn [idx plan]
-                     (let [{::keys [vars]} (meta plan)
-                           var->col (->> vars
-                                         (into {} (map (juxt col-sym (partial col-sym (str "_r" idx))))))]
-                       (-> [:rename var->col
-                            plan]
-                           (with-meta (into (meta plan)
-                                            {::vars (set (vals var->col))
-                                             ::var->col var->col}))))))))
-    (-> plans
-        (with-meta {::var->cols (-> (concat (->> plans (mapcat (comp ::var->col meta)))
-                                            param-vars)
-                                    (->> (group-by key))
-                                    (update-vals #(into #{} (map val) %)))}))))
+        (->> plans
+             (into [] (map-indexed
+                       (fn [idx plan]
+                         (let [{::keys [vars]} (meta plan)
+                               var->col (->> vars
+                                             (into {} (map (juxt col-sym (partial col-sym (str "_r" idx))))))]
+                           (-> [:rename var->col
+                                plan]
+                               (with-meta (into (or (meta plan) {})
+                                                {::vars (set (vals var->col))
+                                                 ::var->col var->col}))))))))
+        (-> plans
+            (with-meta {::var->cols (-> (concat (->> plans (mapcat (comp ::var->col meta)))
+                                                param-vars)
+                                        (->> (group-by key))
+                                        (update-vals #(into #{} (map val) %)))}))))
 
 (defn- mega-join [rels param-vars]
   (let [rels (with-unique-cols rels param-vars)]
@@ -549,31 +549,13 @@
     (sort-by #(-> % :head :name name->ordering) rules)))
 
 (comment
-
   (-> (s/conform :core2.datalog/rules '[[(over-twenty-one? [age])
                                          [(>= age 21)]]
                                         [(over-twenty-one? [age])
                                          (over-twenty-two? age)]
                                         [(over-twenty-two? [age])
                                          [(>= age 1)]]])
-      rules-topological-sort
-
-      )
-
-  (-> (s/conform :core2.datalog/rules '[[(over-twenty-one? [age])
-                                         [(>= age 21)]]
-                                        [(over-twenty-one? [age])
-                                         (over-twenty-two? age)]
-                                        [(over-twenty-two? [age])
-                                         [(>= age 1)]]
-                                        [(over-twenty-two? [age])
-                                         (over-twenty-one? age)]])
-      rules-top-sort
-
-      )
-
-
-  )
+      rules-topological-sort))
 
 
 (defn rename-free-args-mapping [free-args]
@@ -587,36 +569,32 @@
 (defn rename-free-args [plan free-args-mapping]
   (with-meta (vector :rename free-args-mapping plan) (meta plan)))
 
-(defn- compile-rule [{:keys [head body] :as _rule-def} rule-name->planned-rules]
+(defn- compile-rule [rule-name->rules {:keys [head body] :as _rule-def} {:as rule-invocation}]
   #_(when (-> head :args :free-args)
       (throw (ex-info "free args currently not supported in rules" {})))
-  (let [#_#_{sj-required-vars :required-vars} (term-vars [sj-type sj])
-        {{:keys [bound-args free-args]} :args} head
+  (let [{{:keys [bound-args free-args]} :args} head
         required-vars (set bound-args)
         args (into required-vars free-args) ;; TODO add free variables
         apply-mapping (->apply-mapping required-vars)
-        free-args-mapping (rename-free-args-mapping free-args)
         plan (plan-query
               (cond-> {:find (vec (for [arg args]
                                     [:logic-var arg]))
                        :where body
-                       ::rule-name->planned-rules rule-name->planned-rules}
+                       ::rule-name->rules rule-name->rules}
                 (seq apply-mapping) (assoc ::apply-mapping apply-mapping)))]
     (-> plan
-        #_(cond-> plan
-            (seq free-args) (rename-free-args free-args-mapping #_(clojure.set/map-invert free-args-mapping)))
         (vary-meta into
                    {::required-vars required-vars
                     ::free-args free-args
-                    ::free-args-mapping free-args-mapping
                     ::apply-mapping apply-mapping})
         #_(doto clojure.pprint/pprint))))
 
-(defn- plan-rule [rule-name->planned-rules {:keys [args name] :as rule}]
-  (if-let [{:keys [bound-args-cnt]} (get rule-name->planned-rules name)]
-    (vary-meta rule {::required-vars (take bound-args-cnt args)})
+(defn- plan-rule [rule-name->rules {:keys [name args] :as rule-invocation}]
+  (if-let [{{rule-args :args :as _head} :head :as rule-def} (get rule-name->rules name)]
+    (let [plan (compile-rule rule-name->rules rule-def rule-invocation)]
+      (vary-meta plan into {::required-vars (take (count (:bound-args rule-args)) args)}))
     (throw (err/illegal-arg :no-such-rule-known
-                            {:rule rule}))))
+                            {:rule rule-invocation}))))
 
 (defn check-rule-args [{:keys [args name] :as _applied-rule} {expected-args :args :as _rule-definition}]
   (let [{:keys [bound-args free-args]} expected-args]
@@ -625,6 +603,7 @@
                        {:rule-name name
                         :expected-args (into bound-args free-args)
                         :given-args args}))))
+
 #_
 (let [sq-plan (mega-join union-joins param-vars)
       [plan-u sq-plan-u :as rels] (with-unique-cols [plan sq-plan] param-vars)
@@ -633,32 +612,30 @@
        plan-u sq-plan-u]
       (wrap-unify (::var->cols (meta rels)))))
 
-(defn- wrap-rules [plan rule-name->planned-rules applied-rules param-vars]
-  (->> applied-rules
-       (reduce (fn [acc {:keys [name args] :as applied-rule}]
-                 (if-let [{:keys [head plan]} (get rule-name->planned-rules name)]
-                   (let [{::keys [apply-mapping free-args free-args-mapping]} (meta plan)
-                         [acc-u plan-u :as rels] (with-unique-cols [acc plan] param-vars)
-                         apply-mapping-u (update-keys apply-mapping (::var->col (meta acc-u)))
-                         #_#_free-args-mapping (select-keys apply-mapping free-args)]
-                     (prn (meta plan))
-                     (check-rule-args applied-rule head)
-                     (-> (if (seq free-args)
-                           (-> [:apply :cross-join apply-mapping-u #_(zipmap args (vals apply-mapping))
-                                acc-u plan-u]
-                               (wrap-unify (::var->cols (meta rels)))
-                               #_(doto clojure.pprint/pprint))
+(defn- wrap-rules [plan rules param-vars]
+  (->> rules
+       (reduce (fn [acc plan]
+                 (let [{::keys [apply-mapping free-args required-vars] :as meta-org} (meta plan)
+                       [acc-u plan-u :as rels] (with-unique-cols [acc plan] param-vars)
+                       apply-mapping-u (update-keys apply-mapping (::var->col (meta acc-u)))]
+                   (prn :meta-org meta-org)
+                   (prn :acc-u acc-u)
+                   (prn :plan-u plan-u)
+                   (prn :apply-mapping apply-mapping apply-mapping-u)
+                   (-> (if (seq free-args)
+                         (->
+                          [:apply :cross-join apply-mapping-u #_(zipmap args (vals apply-mapping))
+                           acc-u plan-u]
+                          (wrap-unify (::var->cols (meta rels))))
+                         #_(doto clojure.pprint/pprint)
 
-                           [:apply :semi-join (zipmap args (vals apply-mapping))
-                            acc plan])
-                         (with-meta (meta acc-u))))
-                   (throw (err/illegal-arg :no-such-rule-known
-                                           {:rule applied-rule}))))
+                         [:apply :semi-join #_apply-mapping-u (zipmap required-vars (vals apply-mapping))
+                          acc plan])
+                       (with-meta (meta acc-u)))))
                plan)))
 
-
 (defn- plan-body [{where-clauses :where, apply-mapping ::apply-mapping, rules :rules
-                   previous-rules ::rule-name->planned-rules :as query :or {previous-rules {}}}]
+                   previous-rules ::rule-name->rules :as query :or {previous-rules {}}}]
   (let [in-rels (plan-in-tables query)
         {::keys [param-vars]} (meta in-rels)
 
@@ -668,19 +645,22 @@
         (-> where-clauses
             (->> (group-by first))
             (update-vals #(mapv second %)))
-        rule-name->planned-rules
-        (->> rules
-             rules-topological-sort
-             (reduce (fn [rule-name->planned-rules {:keys [head] :as rule-def}]
-                       (assoc rule-name->planned-rules (:name head) {:head head
-                                                                     :plan (compile-rule rule-def rule-name->planned-rules)
-                                                                     :bound-args-cnt (-> head :args :bound-args count)}))
-                     previous-rules))]
+        rule-name->rules (-> (group-by (comp :name :head) rules)
+                             (update-vals first)
+                             (merge previous-rules))
+        #_(->> rules
+               rules-topological-sort
+               (reduce (fn [rule-name->planned-rules {:keys [head] :as rule-def}]
+                         (assoc rule-name->planned-rules (:name head) {:head head
+                                                                       :rule rule-def
+                                                                       #_#_:plan (compile-rule rule-def rule-name->planned-rules)
+                                                                       :bound-args-cnt (-> head :args :bound-args count)}))
+                       previous-rules))]
     (prn "==================")
-    (prn query)
+    ;; (prn query)
     ;; (prn rule-clauses)
     ;; (prn rules)
-    (prn rule-name->planned-rules)
+    (prn rule-name->rules)
     (prn "==================")
     (loop [plan (mega-join (vec (concat in-rels (plan-triples triple-clauses)))
                            (concat param-vars apply-mapping))
@@ -690,7 +670,7 @@
            semi-joins (some->> semi-join-clauses (mapv (partial plan-semi-join :semi-join)))
            anti-joins (some->> anti-join-clauses (mapv (partial plan-semi-join :anti-join)))
            sub-queries (some->> sub-query-clauses (mapv plan-sub-query))
-           rules (some->> rule-clauses (mapv (partial plan-rule rule-name->planned-rules)))]
+           rules (some->> rule-clauses (mapv (partial plan-rule rule-name->rules)))]
 
       ;; (prn rules)
       ;; (prn (mapv meta rules))
@@ -729,7 +709,7 @@
                          available-sjs (wrap-semi-joins :semi-join available-sjs)
                          available-ajs (wrap-semi-joins :anti-join available-ajs)
                          available-sqs (wrap-sub-queries available-sqs param-vars)
-                         available-rules (wrap-rules rule-name->planned-rules available-rules param-vars))
+                         available-rules (wrap-rules available-rules param-vars))
 
                        unavailable-calls unavailable-sqs unavailable-ujs
                        unavailable-sjs unavailable-ajs unavailable-rules)))))))))
@@ -914,10 +894,10 @@
         {::keys [in-bindings]} (meta plan)
 
         plan (-> plan
-                 ;; (doto clojure.pprint/pprint)
-                 #_(->> (binding [*print-meta* true]))
-                 (lp/rewrite-plan {})
                  (doto clojure.pprint/pprint)
+                 #_(->> (binding [*print-meta* true]))
+                 #_(lp/rewrite-plan {})
+                 #_(doto clojure.pprint/pprint)
                  (doto (lp/validate-plan)))
 
         ^core2.operator.PreparedQuery pq (.computeIfAbsent prepare-ra-cache
