@@ -20,7 +20,8 @@
         pro.juxt.clojars-mirrors.integrant/integrant {:mvn/version "0.8.0"}
         org.babashka/sci {:mvn/version "0.6.37"}
 
-        commons-codec/commons-codec {:mvn/version "1.15"}}
+        commons-codec/commons-codec {:mvn/version "1.15"}
+        pro.juxt.clojars-mirrors.com.stuartsierra/dependency {:mvn/version "1.0.0"}}
 
  :deps/prep-lib {:ensure "target/classes"
                  :alias :build

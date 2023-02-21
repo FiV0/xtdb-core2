@@ -5,7 +5,8 @@
             [core2.error :as err]
             [core2.logical-plan :as lp]
             [core2.operator :as op]
-            [core2.vector.writer :as vw])
+            [core2.vector.writer :as vw]
+            [juxt.clojars-mirrors.dependency.v1v0v0.com.stuartsierra.dependency :as dep])
   (:import clojure.lang.MapEntry
            java.time.LocalDate
            java.lang.AutoCloseable
@@ -535,6 +536,45 @@
 
     (mega-join (into [plan] sub-queries) param-vars)))
 
+;; TODO this throws on recursive rules
+(defn- rules-topological-sort [rules]
+  (let [topo-sort (-> (reduce (fn [g {:keys [head body]}]
+                                (->> (filter (comp #{:rule} first) body)
+                                     (map (comp :name second))
+                                     (reduce #(dep/depend %1 (:name head) %2) g)))
+                              (dep/graph)
+                              rules)
+                      dep/topo-sort)
+        name->ordering (zipmap topo-sort (range))]
+    (sort-by #(-> % :head :name name->ordering) rules)))
+
+(comment
+
+  (-> (s/conform :core2.datalog/rules '[[(over-twenty-one? [age])
+                                         [(>= age 21)]]
+                                        [(over-twenty-one? [age])
+                                         (over-twenty-two? age)]
+                                        [(over-twenty-two? [age])
+                                         [(>= age 1)]]])
+      rules-topological-sort
+
+      )
+
+  (-> (s/conform :core2.datalog/rules '[[(over-twenty-one? [age])
+                                         [(>= age 21)]]
+                                        [(over-twenty-one? [age])
+                                         (over-twenty-two? age)]
+                                        [(over-twenty-two? [age])
+                                         [(>= age 1)]]
+                                        [(over-twenty-two? [age])
+                                         (over-twenty-one? age)]])
+      rules-top-sort
+
+      )
+
+
+  )
+
 
 (defn rename-free-args-mapping [free-args]
   ;;TODO symbol names will clash with nested applies
@@ -547,7 +587,7 @@
 (defn rename-free-args [plan free-args-mapping]
   (with-meta (vector :rename free-args-mapping plan) (meta plan)))
 
-(defn- compile-rule [{:keys [head body] :as _rule-def}]
+(defn- compile-rule [{:keys [head body] :as _rule-def} rule-name->planned-rules]
   #_(when (-> head :args :free-args)
       (throw (ex-info "free args currently not supported in rules" {})))
   (let [#_#_{sj-required-vars :required-vars} (term-vars [sj-type sj])
@@ -559,16 +599,18 @@
         plan (plan-query
               (cond-> {:find (vec (for [arg args]
                                     [:logic-var arg]))
-                       :where body}
+                       :where body
+                       ::rule-name->planned-rules rule-name->planned-rules}
                 (seq apply-mapping) (assoc ::apply-mapping apply-mapping)))]
-    (-> (cond-> plan
-          (seq free-args) (rename-free-args free-args-mapping #_(clojure.set/map-invert free-args-mapping)))
+    (-> plan
+        #_(cond-> plan
+            (seq free-args) (rename-free-args free-args-mapping #_(clojure.set/map-invert free-args-mapping)))
         (vary-meta into
                    {::required-vars required-vars
                     ::free-args free-args
                     ::free-args-mapping free-args-mapping
                     ::apply-mapping apply-mapping})
-        (doto clojure.pprint/pprint))))
+        #_(doto clojure.pprint/pprint))))
 
 (defn- plan-rule [rule-name->planned-rules {:keys [args name] :as rule}]
   (if-let [{:keys [bound-args-cnt]} (get rule-name->planned-rules name)]
@@ -583,36 +625,40 @@
                        {:rule-name name
                         :expected-args (into bound-args free-args)
                         :given-args args}))))
+#_
+(let [sq-plan (mega-join union-joins param-vars)
+      [plan-u sq-plan-u :as rels] (with-unique-cols [plan sq-plan] param-vars)
+      apply-mapping-u (update-keys apply-mapping (::var->col (meta plan-u)))]
+  (-> [:apply :cross-join apply-mapping-u
+       plan-u sq-plan-u]
+      (wrap-unify (::var->cols (meta rels)))))
 
-(defn- wrap-rules [plan rule-name->planned-rules applied-rules #_param-vars]
+(defn- wrap-rules [plan rule-name->planned-rules applied-rules param-vars]
   (->> applied-rules
        (reduce (fn [acc {:keys [name args] :as applied-rule}]
                  (if-let [{:keys [head plan]} (get rule-name->planned-rules name)]
                    (let [{::keys [apply-mapping free-args free-args-mapping]} (meta plan)
-                         ;; [plan-u sq-plan-u :as rels] (with-unique-cols [acc ] param-vars)
+                         [acc-u plan-u :as rels] (with-unique-cols [acc plan] param-vars)
+                         apply-mapping-u (update-keys apply-mapping (::var->col (meta acc-u)))
                          #_#_free-args-mapping (select-keys apply-mapping free-args)]
                      (prn (meta plan))
                      (check-rule-args applied-rule head)
                      (-> (if (seq free-args)
-                           (doto [:select
-                                  (cons 'and (map (fn [[arg-left arg-right]]
-                                                    `(~'= ~arg-left ~arg-right))
-                                                  free-args-mapping
-                                                  #_apply-mapping
-                                                  #_(drop (count apply-mapping) args) #_free-args))
-                                  [:apply :cross-join (zipmap args (vals apply-mapping))
-                                   acc plan]]
-                             clojure.pprint/pprint)
+                           (-> [:apply :cross-join apply-mapping-u #_(zipmap args (vals apply-mapping))
+                                acc-u plan-u]
+                               (wrap-unify (::var->cols (meta rels)))
+                               #_(doto clojure.pprint/pprint))
 
                            [:apply :semi-join (zipmap args (vals apply-mapping))
                             acc plan])
-                         (with-meta (meta acc))))
+                         (with-meta (meta acc-u))))
                    (throw (err/illegal-arg :no-such-rule-known
                                            {:rule applied-rule}))))
                plan)))
 
 
-(defn- plan-body [{where-clauses :where, apply-mapping ::apply-mapping, rules :rules :as query}]
+(defn- plan-body [{where-clauses :where, apply-mapping ::apply-mapping, rules :rules
+                   previous-rules ::rule-name->planned-rules :as query :or {previous-rules {}}}]
   (let [in-rels (plan-in-tables query)
         {::keys [param-vars]} (meta in-rels)
 
@@ -624,16 +670,18 @@
             (update-vals #(mapv second %)))
         rule-name->planned-rules
         (->> rules
-             (map (fn [{:keys [head] :as rule-def}] [(:name head) {:head head
-                                                                   :plan (compile-rule rule-def)
-                                                                   :bound-args-cnt (-> head :args :bound-args count)}]))
-             (into {}))]
-    ;; (prn "==================")
-    ;; (prn query)
+             rules-topological-sort
+             (reduce (fn [rule-name->planned-rules {:keys [head] :as rule-def}]
+                       (assoc rule-name->planned-rules (:name head) {:head head
+                                                                     :plan (compile-rule rule-def rule-name->planned-rules)
+                                                                     :bound-args-cnt (-> head :args :bound-args count)}))
+                     previous-rules))]
+    (prn "==================")
+    (prn query)
     ;; (prn rule-clauses)
     ;; (prn rules)
-    ;; (prn rule-name->planned-rules)
-    ;; (prn "==================")
+    (prn rule-name->planned-rules)
+    (prn "==================")
     (loop [plan (mega-join (vec (concat in-rels (plan-triples triple-clauses)))
                            (concat param-vars apply-mapping))
 
@@ -681,7 +729,7 @@
                          available-sjs (wrap-semi-joins :semi-join available-sjs)
                          available-ajs (wrap-semi-joins :anti-join available-ajs)
                          available-sqs (wrap-sub-queries available-sqs param-vars)
-                         available-rules (wrap-rules rule-name->planned-rules available-rules))
+                         available-rules (wrap-rules rule-name->planned-rules available-rules param-vars))
 
                        unavailable-calls unavailable-sqs unavailable-ujs
                        unavailable-sjs unavailable-ajs unavailable-rules)))))))))
