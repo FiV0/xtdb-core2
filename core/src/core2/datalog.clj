@@ -114,8 +114,9 @@
                                   :args (s/+ any?))))
 
 ;; TODO add check of at least one arg
-(s/def ::rule-args (s/cat :bound-args (s/coll-of ::logic-var, :kind vector?)
-                          :free-args (s/* ::logic-var)))
+(s/def ::rule-args
+  (s/cat :bound-args (s/? (s/coll-of ::logic-var, :kind vector?))
+         :free-args (s/* ::logic-var)))
 
 (s/def ::rule-head
   (s/and list?
@@ -534,23 +535,46 @@
 
     (mega-join (into [plan] sub-queries) param-vars)))
 
-(defn- compile-rule [{:keys [head body] :as rule}]
-  (when (-> head :args :free-args)
-    (throw (ex-info "free args currently not supported in rules" {})))
-  (let [#_#_{sj-required-vars :required-vars} (term-vars [sj-type sj])
-        required-vars (-> head :args :bound-args set)
-        args required-vars ;; TODO add free variables
-        apply-mapping (->apply-mapping required-vars)]
-    (-> (plan-query
-         (cond-> {:find (vec (for [arg args]
-                               [:logic-var arg]))
-                  :where body}
-           (seq required-vars) (assoc ::apply-mapping apply-mapping)))
-        (vary-meta into {::required-vars required-vars
-                         ::apply-mapping apply-mapping}))))
 
-(defn- plan-rule [{:keys [args] :as rule}]
-  (vary-meta rule {::required-vars args}))
+(defn rename-free-args-mapping [free-args]
+  ;;TODO symbol names will clash with nested applies
+  ;; (where an apply is nested inside the dep side of another apply)
+  (when (seq free-args)
+    (->> (for [free-arg free-args]
+           (MapEntry/create free-arg (col-sym (str "free_arg_" free-arg))))
+         (into {}))))
+
+(defn rename-free-args [plan free-args-mapping]
+  (with-meta (vector :rename free-args-mapping plan) (meta plan)))
+
+(defn- compile-rule [{:keys [head body] :as _rule-def}]
+  #_(when (-> head :args :free-args)
+      (throw (ex-info "free args currently not supported in rules" {})))
+  (let [#_#_{sj-required-vars :required-vars} (term-vars [sj-type sj])
+        {{:keys [bound-args free-args]} :args} head
+        required-vars (set bound-args)
+        args (into required-vars free-args) ;; TODO add free variables
+        apply-mapping (->apply-mapping required-vars)
+        free-args-mapping (rename-free-args-mapping free-args)
+        plan (plan-query
+              (cond-> {:find (vec (for [arg args]
+                                    [:logic-var arg]))
+                       :where body}
+                (seq apply-mapping) (assoc ::apply-mapping apply-mapping)))]
+    (-> (cond-> plan
+          (seq free-args) (rename-free-args free-args-mapping #_(clojure.set/map-invert free-args-mapping)))
+        (vary-meta into
+                   {::required-vars required-vars
+                    ::free-args free-args
+                    ::free-args-mapping free-args-mapping
+                    ::apply-mapping apply-mapping})
+        (doto clojure.pprint/pprint))))
+
+(defn- plan-rule [rule-name->planned-rules {:keys [args name] :as rule}]
+  (if-let [{:keys [bound-args-cnt]} (get rule-name->planned-rules name)]
+    (vary-meta rule {::required-vars (take bound-args-cnt args)})
+    (throw (err/illegal-arg :no-such-rule-known
+                            {:rule rule}))))
 
 (defn check-rule-args [{:keys [args name] :as _applied-rule} {expected-args :args :as _rule-definition}]
   (let [{:keys [bound-args free-args]} expected-args]
@@ -560,20 +584,28 @@
                         :expected-args (into bound-args free-args)
                         :given-args args}))))
 
-(defn- wrap-rules [plan rule-name->planned-rules applied-rules]
+(defn- wrap-rules [plan rule-name->planned-rules applied-rules #_param-vars]
   (->> applied-rules
        (reduce (fn [acc {:keys [name args] :as applied-rule}]
                  (if-let [{:keys [head plan]} (get rule-name->planned-rules name)]
-                   (let [{::keys [apply-mapping]} (meta plan)]
+                   (let [{::keys [apply-mapping free-args free-args-mapping]} (meta plan)
+                         ;; [plan-u sq-plan-u :as rels] (with-unique-cols [acc ] param-vars)
+                         #_#_free-args-mapping (select-keys apply-mapping free-args)]
+                     (prn (meta plan))
                      (check-rule-args applied-rule head)
-                     (-> (if (seq apply-mapping)
-                           [:apply :semi-join (zipmap args (vals apply-mapping))
-                            acc plan]
+                     (-> (if (seq free-args)
+                           (doto [:select
+                                  (cons 'and (map (fn [[arg-left arg-right]]
+                                                    `(~'= ~arg-left ~arg-right))
+                                                  free-args-mapping
+                                                  #_apply-mapping
+                                                  #_(drop (count apply-mapping) args) #_free-args))
+                                  [:apply :cross-join (zipmap args (vals apply-mapping))
+                                   acc plan]]
+                             clojure.pprint/pprint)
 
-                           (throw (ex-info "Should not happen!" {}))
-                           #_[:semi-join (->> (::vars (meta sq-plan))
-                                              (mapv (fn [v] {v v})))
-                              acc sq-plan])
+                           [:apply :semi-join (zipmap args (vals apply-mapping))
+                            acc plan])
                          (with-meta (meta acc))))
                    (throw (err/illegal-arg :no-such-rule-known
                                            {:rule applied-rule}))))
@@ -592,13 +624,16 @@
             (update-vals #(mapv second %)))
         rule-name->planned-rules
         (->> rules
-             (map (fn [{:keys [head] :as rule-def}] [(:name head) {:head head :plan (compile-rule rule-def)}]))
+             (map (fn [{:keys [head] :as rule-def}] [(:name head) {:head head
+                                                                   :plan (compile-rule rule-def)
+                                                                   :bound-args-cnt (-> head :args :bound-args count)}]))
              (into {}))]
-    (prn "==================")
-    (prn rule-clauses)
-    (prn rules)
-    (prn rule-name->planned-rules)
-    (prn "==================")
+    ;; (prn "==================")
+    ;; (prn query)
+    ;; (prn rule-clauses)
+    ;; (prn rules)
+    ;; (prn rule-name->planned-rules)
+    ;; (prn "==================")
     (loop [plan (mega-join (vec (concat in-rels (plan-triples triple-clauses)))
                            (concat param-vars apply-mapping))
 
@@ -607,10 +642,10 @@
            semi-joins (some->> semi-join-clauses (mapv (partial plan-semi-join :semi-join)))
            anti-joins (some->> anti-join-clauses (mapv (partial plan-semi-join :anti-join)))
            sub-queries (some->> sub-query-clauses (mapv plan-sub-query))
-           rules (some->> rule-clauses (mapv plan-rule))]
+           rules (some->> rule-clauses (mapv (partial plan-rule rule-name->planned-rules)))]
 
-      (prn rules)
-      (prn (mapv meta rules))
+      ;; (prn rules)
+      ;; (prn (mapv meta rules))
 
       (if (and (empty? calls) (empty? sub-queries)
                (empty? semi-joins) (empty? anti-joins) (empty? union-joins)
@@ -831,7 +866,7 @@
         {::keys [in-bindings]} (meta plan)
 
         plan (-> plan
-                 #_(doto clojure.pprint/pprint)
+                 ;; (doto clojure.pprint/pprint)
                  #_(->> (binding [*print-meta* true]))
                  (lp/rewrite-plan {})
                  (doto clojure.pprint/pprint)
