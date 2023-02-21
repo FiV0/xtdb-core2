@@ -112,7 +112,8 @@
   (s/cat :q #{'q}, :query ::query))
 
 (s/def ::rule (s/and list? (s/cat :name (s/and simple-symbol? (complement build-ins))
-                                  :args (s/+ any?))))
+                                  :args (s/+ (s/or :literal ::value,
+                                                   :logic-var ::logic-var)))))
 
 ;; TODO add check of at least one arg
 (s/def ::rule-args
@@ -569,9 +570,8 @@
 (defn rename-free-args [plan free-args-mapping]
   (with-meta (vector :rename free-args-mapping plan) (meta plan)))
 
-(defn- compile-rule [rule-name->rules {:keys [head body] :as _rule-def} {:as rule-invocation}]
-  #_(when (-> head :args :free-args)
-      (throw (ex-info "free args currently not supported in rules" {})))
+(defn- compile-rule [rule-name->rules {:keys [head body] :as _rule-def} {:keys [args] :as rule-invocation}]
+  ;; TODO deal with literal free-args
   (let [{{:keys [bound-args free-args]} :args} head
         required-vars (set bound-args)
         args (into required-vars free-args) ;; TODO add free variables
@@ -583,16 +583,17 @@
                        ::rule-name->rules rule-name->rules}
                 (seq apply-mapping) (assoc ::apply-mapping apply-mapping)))]
     (-> plan
-        (vary-meta into
-                   {::required-vars required-vars
-                    ::free-args free-args
-                    ::apply-mapping apply-mapping})
+        (vary-meta into {::required-vars required-vars
+                         ::free-args free-args
+                         ::apply-mapping apply-mapping})
         #_(doto clojure.pprint/pprint))))
 
 (defn- plan-rule [rule-name->rules {:keys [name args] :as rule-invocation}]
   (if-let [{{rule-args :args :as _head} :head :as rule-def} (get rule-name->rules name)]
     (let [plan (compile-rule rule-name->rules rule-def rule-invocation)]
-      (vary-meta plan into {::required-vars (take (count (:bound-args rule-args)) args)}))
+      (vary-meta plan into {::required-vars
+                            (->> (map second args)
+                                 (take (count (:bound-args rule-args)) ))}))
     (throw (err/illegal-arg :no-such-rule-known
                             {:rule rule-invocation}))))
 
@@ -604,32 +605,19 @@
                         :expected-args (into bound-args free-args)
                         :given-args args}))))
 
-#_
-(let [sq-plan (mega-join union-joins param-vars)
-      [plan-u sq-plan-u :as rels] (with-unique-cols [plan sq-plan] param-vars)
-      apply-mapping-u (update-keys apply-mapping (::var->col (meta plan-u)))]
-  (-> [:apply :cross-join apply-mapping-u
-       plan-u sq-plan-u]
-      (wrap-unify (::var->cols (meta rels)))))
-
 (defn- wrap-rules [plan rules param-vars]
   (->> rules
        (reduce (fn [acc plan]
                  (let [{::keys [apply-mapping free-args required-vars] :as meta-org} (meta plan)
                        [acc-u plan-u :as rels] (with-unique-cols [acc plan] param-vars)
                        apply-mapping-u (update-keys apply-mapping (::var->col (meta acc-u)))]
-                   (prn :meta-org meta-org)
-                   (prn :acc-u acc-u)
-                   (prn :plan-u plan-u)
-                   (prn :apply-mapping apply-mapping apply-mapping-u)
                    (-> (if (seq free-args)
-                         (->
-                          [:apply :cross-join apply-mapping-u #_(zipmap args (vals apply-mapping))
-                           acc-u plan-u]
-                          (wrap-unify (::var->cols (meta rels))))
+                         (-> [:apply :cross-join apply-mapping-u
+                              acc-u plan-u]
+                             (wrap-unify (::var->cols (meta rels))))
                          #_(doto clojure.pprint/pprint)
 
-                         [:apply :semi-join #_apply-mapping-u (zipmap required-vars (vals apply-mapping))
+                         [:apply :semi-join  (zipmap required-vars (vals apply-mapping))
                           acc plan])
                        (with-meta (meta acc-u)))))
                plan)))
@@ -660,7 +648,7 @@
     ;; (prn query)
     ;; (prn rule-clauses)
     ;; (prn rules)
-    (prn rule-name->rules)
+    ;; (prn rule-name->rules)
     (prn "==================")
     (loop [plan (mega-join (vec (concat in-rels (plan-triples triple-clauses)))
                            (concat param-vars apply-mapping))
