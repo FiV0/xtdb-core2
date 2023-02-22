@@ -21,9 +21,12 @@
 (s/def ::eid eid?)
 (s/def ::value (some-fn eid?))
 
+(def ^:private build-ins (set/union (set (keys (ns-publics (find-ns 'clojure.core))))
+                                    '#{exists? not-exists? union-join q <>}))
+
 (s/def ::fn-call
   (s/and list?
-         (s/cat :f simple-symbol?
+         (s/cat :f build-ins
                 :args (s/* ::form))))
 
 (s/def ::form
@@ -107,13 +110,30 @@
 (s/def ::sub-query
   (s/cat :q #{'q}, :query ::query))
 
+(s/def ::rule (s/and list? (s/cat :name (s/and simple-symbol? (complement build-ins))
+                                  :args (s/+ (s/or :literal ::value,
+                                                   :logic-var ::logic-var)))))
+
+(s/def ::rule-head
+  (s/and list?
+         (s/cat :name (s/and simple-symbol? (complement build-ins))
+                :args (s/+ ::logic-var))))
+
+(s/def ::rule-definition
+  (s/and vector?
+         (s/cat :head ::rule-head
+                :body (s/+ ::term))))
+
+(s/def ::rules (s/coll-of ::rule-definition :kind vector? :min-count 1))
+
 (s/def ::term
   (s/or :triple ::triple
         :semi-join ::semi-join
         :anti-join ::anti-join
         :union-join ::union-join
         :call ::call-clause
-        :sub-query ::sub-query))
+        :sub-query ::sub-query
+        :rule ::rule))
 
 (s/def ::where
   (s/coll-of ::term :kind vector? :min-count 1))
@@ -130,7 +150,7 @@
 
 (s/def ::query
   (s/keys :req-un [::find]
-          :opt-un [::keys ::in ::where ::order-by ::offset ::limit]))
+          :opt-un [::keys ::in ::where ::order-by ::offset ::limit ::rules]))
 
 (s/def ::relation-arg
   (s/or :maps (s/coll-of (s/map-of simple-keyword? any?))
@@ -510,15 +530,41 @@
 
     (mega-join (into [plan] sub-queries) param-vars)))
 
-(defn- plan-body [{where-clauses :where, apply-mapping ::apply-mapping, :as query}]
+
+(defn rewrite-rule [rule-name->rules {:keys [name args] :as rule}]
+  (let [rules (get rule-name->rules name)]
+    ))
+
+(defn- expand-rules [rule-name->rules where-clauses]
+  (reduce (fn [res [type arg :as _clause]]
+            (case type
+              :rule (into res (rewrite-rule rule-name->rules arg))
+              res))
+          []
+          where-clauses))
+
+(comment
+
+  (s/conform ::query
+
+             '{:find [i]
+               :where [[i :age age]
+                       (over-twenty-one? age)]
+               :rules [[(over-twenty-one? age)
+                        [(>= age 21)]]]}))
+
+
+(defn- plan-body [{where-clauses :where, apply-mapping ::apply-mapping, rules :rules, :as query}]
   (let [in-rels (plan-in-tables query)
         {::keys [param-vars]} (meta in-rels)
 
         {triple-clauses :triple, call-clauses :call, sub-query-clauses :sub-query
-         semi-join-clauses :semi-join, anti-join-clauses :anti-join, union-join-clauses :union-join}
+         semi-join-clauses :semi-join, anti-join-clauses :anti-join, union-join-clauses :union-join
+         rule-clauses :rule}
         (-> where-clauses
             (->> (group-by first))
-            (update-vals #(mapv second %)))]
+            (update-vals #(mapv second %)))
+        rule-name->rules (group-by (comp :name :head) rules)]
 
     (loop [plan (mega-join (vec (concat in-rels (plan-triples triple-clauses)))
                            (concat param-vars apply-mapping))
