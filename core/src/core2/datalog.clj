@@ -2,13 +2,14 @@
   (:require [clojure.set :as set]
             [clojure.spec.alpha :as s]
             [clojure.string :as str]
+            [clojure.walk :as walk]
             [core2.error :as err]
             [core2.logical-plan :as lp]
             [core2.operator :as op]
             [core2.vector.writer :as vw])
   (:import clojure.lang.MapEntry
-           java.time.LocalDate
            java.lang.AutoCloseable
+           java.time.LocalDate
            (java.util.concurrent ConcurrentHashMap)
            (java.util.function Function)
            org.apache.arrow.memory.BufferAllocator))
@@ -530,27 +531,99 @@
 
     (mega-join (into [plan] sub-queries) param-vars)))
 
+(let [cnt (atom 0)]
+  (defn unique-rule-var [suffix]
+    (let [res (symbol (str "_rule_" @cnt "_" suffix))]
+      (swap! cnt inc)
+      res)))
 
-(defn rewrite-rule [rule-name->rules {:keys [name args] :as rule}]
-  (let [rules (get rule-name->rules name)]
-    ))
+(defn- replace-logic-vars-fn [mapping]
+  (let [mapping (atom mapping)]
+    (fn [form]
+      (if (and (vector? form) (= (first form) :logic-var))
+        (let [var (second form)]
+          (assoc form 1 (or (get @mapping var) (get (swap! mapping assoc var (unique-rule-var var)) var))))
+        form))))
 
-(defn- expand-rules [rule-name->rules where-clauses]
-  (reduce (fn [res [type arg :as _clause]]
-            (case type
-              :rule (into res (rewrite-rule rule-name->rules arg))
-              res))
-          []
-          where-clauses))
+#_(s/or :triple ::triple
+        :semi-join ::semi-join
+        :anti-join ::anti-join
+        :union-join ::union-join
+        :call ::call-clause
+        :sub-query ::sub-query
+        :rule ::rule)
+
+
+;; assumes subcalls have been replaced
+#_(defn walk-rule-body [mapping where-clauses]
+    (let [replace-fn (replace-logic-vars-fn mapping)]
+      (mapv (fn [[type :as clause]]
+              (case type
+                )))))
+
+
 
 (comment
 
+  (walk/postwalk (replace-logic-vars-fn {}) #_{'age 'age2}
+                 '[[:call
+                    {:form
+                     [:fn-call {:f >=, :args [[:logic-var age] [:logic-var age][:value 21]]}]}]])
+  )
+
+(declare expand-rules)
+
+(defn rewrite-rule [rule-name->rules {:keys [name args] :as _rule-invocation}]
+  (let [rules (get rule-name->rules name)
+        outer-vars (mapv second args)
+        branches (->> rules
+                      (mapv (fn [{:keys [head body] :as rule}]
+                              (let [var-inner->var-outer (zipmap (:args head) outer-vars)]
+                                (->> (walk/postwalk (replace-logic-vars-fn var-inner->var-outer) body)
+                                     (expand-rules rule-name->rules))))))]
+    [:union-join
+     {:union-join 'union-join
+      :args outer-vars
+      :branches branches}]))
+
+(comment
+  (def rule-name->rules '{over-twenty-one?
+                          [{:head {:name over-twenty-one?, :args [age]},
+                            :body
+                            [[:call
+                              {:form
+                               [:fn-call {:f >=, :args [[:logic-var age] [:value 21]]}]}]]}
+                           {:head {:name over-twenty-one?, :args [age]},
+                            :body
+                            [[:call
+                              {:form
+                               [:fn-call {:f >=, :args [[:logic-var age] [:value 21]]}]}]]}]})
+
+  (rewrite-rule rule-name->rules '{:name over-twenty-one?, :args [[:logic-var age]]}))
+
+(defn- expand-rules [rule-name->rules where-clauses]
+  (mapv (fn [[type arg :as clause]]
+          (case type
+            :rule (rewrite-rule rule-name->rules arg)
+            clause))
+        where-clauses))
+
+(comment
+  (s/conform ::query '{:find [e]
+                       :where [(union-join [e]
+                                           [e :role :developer]
+                                           [e :age 30])
+                               (union-join [e]
+                                           [e :id :petr]
+                                           [e :id :ivan])]})
   (s/conform ::query
 
              '{:find [i]
                :where [[i :age age]
                        (over-twenty-one? age)]
                :rules [[(over-twenty-one? age)
+                        [(>= age 21)]]
+                       [(over-twenty-one? age)
                         [(>= age 21)]]]}))
 
 
@@ -558,13 +631,15 @@
   (let [in-rels (plan-in-tables query)
         {::keys [param-vars]} (meta in-rels)
 
+        rule-name->rules (group-by (comp :name :head) rules)
+        where-clauses (-> (expand-rules rule-name->rules where-clauses)
+                          (doto clojure.pprint/pprint))
+
         {triple-clauses :triple, call-clauses :call, sub-query-clauses :sub-query
-         semi-join-clauses :semi-join, anti-join-clauses :anti-join, union-join-clauses :union-join
-         rule-clauses :rule}
+         semi-join-clauses :semi-join, anti-join-clauses :anti-join, union-join-clauses :union-join}
         (-> where-clauses
             (->> (group-by first))
-            (update-vals #(mapv second %)))
-        rule-name->rules (group-by (comp :name :head) rules)]
+            (update-vals #(mapv second %)))]
 
     (loop [plan (mega-join (vec (concat in-rels (plan-triples triple-clauses)))
                            (concat param-vars apply-mapping))
