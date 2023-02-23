@@ -23,7 +23,7 @@
 (s/def ::value (some-fn eid?))
 
 (def ^:private build-ins (set/union (set (keys (ns-publics (find-ns 'clojure.core))))
-                                    '#{exists? not-exists? union-join q <>}))
+                                    '#{sum exists? not-exists? union-join q <> if}))
 
 (s/def ::fn-call
   (s/and list?
@@ -531,37 +531,58 @@
 
     (mega-join (into [plan] sub-queries) param-vars)))
 
+
 (let [cnt (atom 0)]
   (defn unique-rule-var [suffix]
     (let [res (symbol (str "_rule_" @cnt "_" suffix))]
       (swap! cnt inc)
       res)))
 
-(defn- replace-logic-vars-fn [mapping]
+;; TODO don't suffix replaced vars in subcalls again
+(defn replace-var-fn [mapping]
   (let [mapping (atom mapping)]
-    (fn [form]
-      (if (and (vector? form) (= (first form) :logic-var))
-        (let [var (second form)]
-          (assoc form 1 (or (get @mapping var) (get (swap! mapping assoc var (unique-rule-var var)) var))))
-        form))))
+    (fn [var]
+      (or (get @mapping var) (get (swap! mapping assoc var (unique-rule-var var)) var)))))
 
-#_(s/or :triple ::triple
-        :semi-join ::semi-join
-        :anti-join ::anti-join
-        :union-join ::union-join
-        :call ::call-clause
-        :sub-query ::sub-query
-        :rule ::rule)
-
+(defn- replace-logic-vars-fn [replace-var]
+  (fn [form]
+    (if (and (simple-symbol? form) ((complement build-ins) form))
+      #_(assoc form 1 (replace-var (second form)))
+      (replace-var form)
+      form)))
 
 ;; assumes subcalls have been replaced
-#_(defn walk-rule-body [mapping where-clauses]
-    (let [replace-fn (replace-logic-vars-fn mapping)]
-      (mapv (fn [[type :as clause]]
-              (case type
-                )))))
+(defn walk-rule-body [replace-var where-clauses]
+  (mapv (fn [[type :as clause]]
+          (case type
+            :triple (walk/postwalk (replace-logic-vars-fn replace-var) clause)
+            :semi-join clause
+            :union-join (-> clause
+                            (update-in [1 :args] #(mapv replace-var %)))
+            :call (walk/postwalk (replace-logic-vars-fn replace-var) clause)
+            :sub-query clause
+            ;; we should not see a rule here
+            ))
+        where-clauses))
 
+(defn- logic-vars->literals [var->literal form]
+  (if (and (vector? form) (= (first form) :logic-var) (contains? var->literal (second form)))
+    [:literal (var->literal (second form))]
+    form))
 
+(defn var->literal-substitution [var->literal where-clauses]
+  (mapv (fn [[type :as clause]]
+          (case type
+            :triple (walk/postwalk (partial logic-vars->literals var->literal) clause)
+            :semi-join clause ;; TODO
+            :union-join (-> clause
+                            (update-in [1 :args] (fn [args] (vec (remove #(contains? var->literal %) args))))
+                            (update-in [1 :branches] #(mapv (partial var->literal-substitution var->literal) %)))
+            :call (walk/postwalk (partial logic-vars->literals var->literal) clause)
+            :sub-query clause ;; TODO
+            ;; we should not see a rule here
+            ))
+        where-clauses))
 
 (comment
 
@@ -573,17 +594,49 @@
 
 (declare expand-rules)
 
+(defn unique-symbol-fn [prefix]
+  (let [cnt (atom -1)]
+    (fn [suffix]
+      (symbol (str "_" prefix "_" (swap! cnt inc) "_" suffix)))))
+
+(def unique-rule-arg-symbol (unique-symbol-fn "rule_arg"))
+
+(defn var-inner->var-outer [inner-vars outer-args]
+  (->> (map (fn [var [type arg]]
+              (if (= type :logic-var)
+                (MapEntry/create var arg)
+                (MapEntry/create var (unique-rule-arg-symbol var))))
+            inner-vars outer-args)
+       (into {})))
+
+(comment
+  (require 'sc.api)
+
+
+
+  )
+
 (defn rewrite-rule [rule-name->rules {:keys [name args] :as _rule-invocation}]
   (let [rules (get rule-name->rules name)
-        outer-vars (mapv second args)
         branches (->> rules
                       (mapv (fn [{:keys [head body] :as rule}]
-                              (let [var-inner->var-outer (zipmap (:args head) outer-vars)]
-                                (->> (walk/postwalk (replace-logic-vars-fn var-inner->var-outer) body)
-                                     (expand-rules rule-name->rules))))))]
+                              (let [var-inner->var-outer (var-inner->var-outer (:args head) args)
+                                    #_(zipmap (:args head) outer-vars)
+                                    var->literal (->> (map vector (:args head) args)
+                                                      (filter (comp #{:literal} first second))
+                                                      (map (fn [[original-var [_ value]]]
+                                                             [(var-inner->var-outer original-var) value]))
+                                                      (into {}))
+                                    _ (sc.api/spy)
+                                    _ (prn :var->literal var->literal)
+                                    replace-var (replace-var-fn var-inner->var-outer)]
+                                (->> (expand-rules rule-name->rules body)
+                                     (walk/postwalk (replace-logic-vars-fn replace-var))
+                                     (var->literal-substitution var->literal))))))]
     [:union-join
      {:union-join 'union-join
-      :args outer-vars
+      :args (->> (filter (comp #{:logic-var} first) args)
+                 (mapv second))
       :branches branches}]))
 
 (comment
@@ -599,7 +652,17 @@
                               {:form
                                [:fn-call {:f >=, :args [[:logic-var age] [:value 21]]}]}]]}]})
 
-  (rewrite-rule rule-name->rules '{:name over-twenty-one?, :args [[:logic-var age]]}))
+  (rewrite-rule rule-name->rules '{:name over-twenty-one?, :args [[:logic-var age]]})
+  (rewrite-rule rule-name->rules '{:name over-twenty-one?, :args [[:value 21]]})
+
+
+  (sc.api/letsc [94 -7]
+                (->> (map vector (:args head) args)
+                     #_(filter (comp #{:value} first second))
+                     #_(map (fn [[original-var literal]]
+                              [(var-inner->var-outer original-var) literal]))
+                     #_(into {})))
+  )
 
 (defn- expand-rules [rule-name->rules where-clauses]
   (mapv (fn [[type arg :as clause]]

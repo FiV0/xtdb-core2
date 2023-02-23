@@ -846,6 +846,12 @@
                                                [(+ a1 (+ a2 a3 1)) sum-ages]]}
                                      (assoc :basis {:tx !tx}))))))))
 
+'{:find [e]
+  :where [[e :id]
+          (union-join []
+                      [(>= 21 20)])]}
+
+
 (deftest test-union-join
   (let [!tx (c2/submit-tx tu/*node* [[:put {:id :ivan, :age 20, :role :developer}]
                                      [:put {:id :oleg, :age 30, :role :manager}]
@@ -856,6 +862,18 @@
               (c2/datalog-query tu/*node*
                                 (-> query
                                     (assoc :basis {:tx !tx}))))]
+      (t/is (= [{:e :ivan}]
+               (q '{:find [e]
+                    :where [[e :id]
+                            (union-join []
+                                        [(>= 21 20)])]})))
+
+      (t/is (= []
+               (q '{:find [e]
+                    :where [[e :id]
+                            (union-join []
+                                        [(>= 20 21)])]})))
+
       (t/is (= [{:e :ivan}]
                (q '{:find [e]
                     :where [(union-join [e]
@@ -1100,6 +1118,29 @@
 
   )
 
+#_#_#_
+(deftest uni-test
+  (t/is (= nil (c2/datalog-query tu/*node*
+                                 '{:find [i]
+                                   :where [[(== i 1)]]}))))
+
+(deftest uni-test2
+  (let [tx (c2/submit-tx tu/*node* [[:put {:id  1 :foo "bar"}]])]
+    (t/is (= [{:i 1}]
+             (c2/datalog-query tu/*node*
+                               '{:find [i]
+                                 :where [[i :id]
+                                         [(= 1 1)]]})))))
+
+(deftest uni-test3
+  (let [tx (c2/submit-tx tu/*node* [[:put {:id  1 :foo "bar"}]])]
+    (t/is (= [{:i 1}]
+             (c2/datalog-query tu/*node*
+                               '{:find [i]
+                                 :where [[i :id]
+                                         (union-join []
+                                                     [i :id]
+                                                     [(= 1 1)])]})))))
 
 
 
@@ -1113,7 +1154,7 @@
   (t/is (= '[{:head {:name over-twenty-one?, :args [age]},
               :body
               [[:call
-                {:form [:fn-call {:f >=, :args [[:logic-var age] [:value 21]]}]}]]}
+                {:form [:fn-call {:f >=, :args [[:logic-var age] [:literal 21]]}]}]]}
              {:head {:name over-twenty-one?, :args [age]},
               :body
               [[:anti-join
@@ -1122,7 +1163,7 @@
                  :terms
                  [[:call
                    {:form
-                    [:fn-call {:f <, :args [[:logic-var age] [:value 21]]}]}]]}]]}]
+                    [:fn-call {:f <, :args [[:logic-var age] [:literal 21]]}]}]]}]]}]
 
            (s/conform :core2.datalog/rules '[[(over-twenty-one? age)
                                               [(>= age 21)]]
@@ -1151,6 +1192,7 @@
 
           "find people who have children")
 
+
     (t/testing "rule using required bound args"
       (t/is (= [{:i :ivan}] (c2/datalog-query tu/*node*
                                               (-> '{:find [i]
@@ -1160,7 +1202,7 @@
                                                              [(>= age 21)]]]}
                                                   (assoc :basis {:tx tx}))))))
 
-    (t/testing "rule using required bound args"
+    (t/testing "rule using required bound args (different arg names)"
       (t/is (= [{:i :ivan}] (c2/datalog-query tu/*node*
                                               (-> '{:find [i]
                                                     :where [[i :age age]
@@ -1168,7 +1210,6 @@
                                                     :rules [[(over-twenty-one? age-other)
                                                              [(>= age-other 21)]]]}
                                                   (assoc :basis {:tx tx}))))))
-
     (t/testing "rules directly on arguments"
       (t/is (= [{:age 21}] (c2/datalog-query tu/*node*
                                              (-> '{:find [age]
@@ -1187,7 +1228,6 @@
                                                    [(>= age 21)]]]}
                                         (assoc :basis {:tx tx}))
                                     20))))
-
     (t/testing "testing rule with multiple args"
       (t/is (= #{{:i :petr, :age 18, :u :ivan}
                  {:i :georgy, :age 17, :u :ivan}
@@ -1217,7 +1257,7 @@
                     (into #{})))))
 
 
-    (t/testing "nested rules bound"
+    (t/testing "nested rules"
       (t/is (= [{:i :ivan}] (c2/datalog-query tu/*node* (-> '{:find [i]
                                                               :where [[i :age age]
                                                                       (over-twenty-one? age)]
@@ -1226,6 +1266,14 @@
                                                                       [(over-twenty-one-internal? y)
                                                                        [(>= y 21)]]]}
                                                             (assoc :basis {:tx tx}))))))
+
+    #_
+    '{:type :union-join
+      :args [age]
+      :branches [[{:type :union-join
+                   :args [age]
+                   :branches [[[(>= age 21)]]]}]]}
+
     (t/testing "nested rules bound (same arg names)"
       (t/is (= [{:i :ivan}] (c2/datalog-query tu/*node* (-> '{:find [i]
                                                               :where [[i :age age]
@@ -1233,41 +1281,49 @@
                                                               :rules [[(over-twenty-one? age)
                                                                        (over-twenty-one-internal? age)]
                                                                       [(over-twenty-one-internal? age)
-                                                                       [(>= y 21)]]]}
+                                                                       [(>= age 21)]]]}
                                                             (assoc :basis {:tx tx}))))))
-
     #_
-    (t/testing "nested rules (unbound)"
-      (t/is (= #{[:ivan]} (c2/datalog-query tu/*node* '{:find [i]
-                                                        :where [[i :age age]
-                                                                (over-twenty-one? age)]
-                                                        :rules [[(over-twenty-one? x)
-                                                                 (over-twenty-one-internal? x)]
-                                                                [(over-twenty-one-internal? y)
-                                                                 [(>= y 21)]]]}))))
+    {:type :union-join
+     :args [age]
+     :branches [[{:type :union-join
+                  :args [age]
+                  :branches [[[(>= age 21)]]]}]]}
 
-    #_
-    (t/testing "rule using different variable name from body (bound arg)"
+
+
+    (t/is (= [{:i :ivan}] (c2/datalog-query tu/*node* (-> '{:find [i]
+                                                            :where [[i :age age]
+                                                                    (over-twenty-one? age)]
+                                                            :rules [[(over-twenty-one? x)
+                                                                     (over-twenty-one-internal? x)]
+                                                                    [(over-twenty-one-internal? y)
+                                                                     [(>= y 21)]]]}
+                                                          (assoc :basis {:tx tx})))))
+
+
+    (t/testing "rule using literal arguments"
       (t/is (= [{:i :ivan}] (c2/datalog-query tu/*node* '{:find [i]
                                                           :where [[i :age age]
-                                                                  (over-twenty-one? age)]
-                                                          :rules [[(over-twenty-one? [x])
-                                                                   [(>= x 21)]]]}))))
+                                                                  (over-age? age 21)]
+                                                          :rules [[(over-age? age required-age)
+                                                                   [(>= age required-age)]]]})))
+
+
+
+      (t/testing "same arg-name different position test (shadowing test)"
+        (t/is (= [{:i :ivan}] (c2/datalog-query tu/*node* '{:find [i]
+                                                            :where [[i :age age]
+                                                                    (over-age? age 21)]
+                                                            :rules [[(over-age? other-age age)
+                                                                     [(>= other-age age)]]]})))))
+
 
     #_
-    (t/testing "rule using different variable name from body (unbound arg)"
-      (t/is (= [{:i :ivan}] (c2/datalog-query tu/*node* '{:find [i]
-                                                          :where [[i :age age]
-                                                                  (over-twenty-one? age)]
-                                                          :rules [[(over-twenty-one? x)
-                                                                   [(>= x 21)]]]}))))
-    #_
-    (t/testing "rule using multiple arguments (bound args)"
-      (t/is (= {:i :ivan} (c2/datalog-query tu/*node* '{:find [i i2]
-                                                        :where [[i :age age]
-                                                                (over-age? age 21)]
-                                                        :rules [[(over-age? [age required-age])
-                                                                 [(>= age required-age)]]]}))))
+    {:type :union-join
+     :args []
+     :branches [[[(>= )]]]}
+
 
     #_
     (t/testing "rule using multiple arguments (with unbound args) "
