@@ -786,7 +786,18 @@
                                              [e2 :age a2]
                                              [e3 :age a3]
                                              [(+ a1 a2) a3]]}
-                                   (assoc :basis {:tx !tx})))))))
+                                   (assoc :basis {:tx !tx})))))
+
+    (t/is (= [{:a3 74}]
+             (c2/datalog-query tu/*node*
+                               (-> '{:find [a3]
+                                     :where [[e1 :id :ivan]
+                                             [e2 :id :petr]
+                                             [e1 :age a1]
+                                             [e2 :age a2]
+                                             [(* (+ a1 a2) 2) a3]]}
+                                   (assoc :basis {:tx !tx}))))
+          "function with literal test")))
 
 (deftest test-nested-expressions-581
   (let [!tx (c2/submit-tx tu/*node*

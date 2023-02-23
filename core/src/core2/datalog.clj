@@ -33,7 +33,7 @@
 (s/def ::form
   (s/or :logic-var ::logic-var
         :fn-call ::fn-call
-        :value ::value))
+        :literal ::value))
 
 (s/def ::find-arg
   (s/or :logic-var ::logic-var
@@ -235,7 +235,7 @@
             (case form-type
               :fn-call (into #{} (mapcat form-vars*) (:args form-arg))
               :logic-var #{form-arg}
-              :value #{}))]
+              :literal #{}))]
     (form-vars* form)))
 
 (defn- combine-term-vars [term-varses]
@@ -405,7 +405,7 @@
                             form-arg
                             (col-sym form-arg))
                :fn-call (-> form-arg (update :args #(mapv with-col-metadata %)))
-               :value form-arg)])]
+               :literal form-arg)])]
     (-> (s/unform ::form (with-col-metadata form))
         (with-meta (into {::required-vars (form-vars form)}
 
