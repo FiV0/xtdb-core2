@@ -531,7 +531,6 @@
 
     (mega-join (into [plan] sub-queries) param-vars)))
 
-
 (let [cnt (atom 0)]
   (defn unique-rule-var [suffix]
     (let [res (symbol (str "_rule_" @cnt "_" suffix))]
@@ -551,20 +550,6 @@
       (replace-var form)
       form)))
 
-;; assumes subcalls have been replaced
-(defn walk-rule-body [replace-var where-clauses]
-  (mapv (fn [[type :as clause]]
-          (case type
-            :triple (walk/postwalk (replace-logic-vars-fn replace-var) clause)
-            :semi-join clause
-            :union-join (-> clause
-                            (update-in [1 :args] #(mapv replace-var %)))
-            :call (walk/postwalk (replace-logic-vars-fn replace-var) clause)
-            :sub-query clause
-            ;; we should not see a rule here
-            ))
-        where-clauses))
-
 (defn- logic-vars->literals [var->literal form]
   (if (and (vector? form) (= (first form) :logic-var) (contains? var->literal (second form)))
     [:literal (var->literal (second form))]
@@ -575,6 +560,7 @@
           (case type
             :triple (walk/postwalk (partial logic-vars->literals var->literal) clause)
             :semi-join clause ;; TODO
+            :anti-join clause ;; TODO
             :union-join (-> clause
                             (update-in [1 :args] (fn [args] (vec (remove #(contains? var->literal %) args))))
                             (update-in [1 :branches] #(mapv (partial var->literal-substitution var->literal) %)))
@@ -610,29 +596,333 @@
        (into {})))
 
 (comment
+  (require 'sc.api))
+
+;; replace context
+#_{:var->replacement {}
+   :replacement-fn (fn [sym] 'new-sy)}
+
+(defrecord ReplacementCtx [var->replacement replacement-fn])
+
+(defn ->replacment-ctx [var->replacement replacement-fn]
+  (->ReplacementCtx var->replacement replacement-fn))
+
+(defn get-replacement [{:keys [var->replacement replacement-fn] :as ctx} var]
+  (if-let [replacement (var->replacement var)]
+    [replacement ctx]
+    (let [replacement (replacement-fn var)]
+      [replacement (update ctx :var->replacement assoc var replacement)])))
+
+(defn new-replacement-ctx [vars-to-keep {:keys [var->replacement] :as ctx}]
+  (assoc ctx :var->replacement (select-keys var->replacement vars-to-keep)))
+
+(defn wrap-replacement [replacement]
+  (if (simple-symbol? replacement) [:logic-var replacement] [:literal replacement]))
+
+(defn replace-arg-list [arg-list ctx]
+  (reduce (fn [[arg-list ctx] var]
+            (let [[replacement ctx] (get-replacement ctx var)]
+              [(if (simple-symbol? replacement)
+                 (conj arg-list replacement)
+                 arg-list) ctx]))
+          [[] ctx]
+          arg-list))
+
+(comment
+  (def arg-list '[a b c])
+  (def rp-ctx (->replacment-ctx '{a d b 2} identity))
+  (replace-arg-list arg-list rp-ctx))
+
+(declare replace-vars*)
+
+(defmulti replace-vars (fn [clause replace-ctx] (first clause))
+  :default ::default)
+
+(defmethod replace-vars ::default [[type _] _] (throw (ex-info "No such clause known!" {:type type})))
+
+(defmethod replace-vars :logic-var [[_ var] replace-ctx]
+  (let [[replacement new-ctx] (get-replacement replace-ctx var)]
+    [(wrap-replacement replacement) new-ctx]))
+
+(defmethod replace-vars :literal [literal replace-ctx]
+  [literal replace-ctx])
+
+(defmethod replace-vars :triple [[_ {:keys [e v]} :as triple] replace-cxt]
+  (let [[new-e replace-ctx] (replace-vars e replace-cxt)
+        [new-v replace-ctx] (replace-vars v replace-ctx)]
+    [(-> triple (update 1 assoc :e new-e) (update 1 assoc :v new-v))
+     replace-ctx]))
+
+(comment
+  (def triple '[:triple {:e [:logic-var i], :a :age, :v [:logic-var age]}])
+  (def rp-ctx (->replacment-ctx '{i a} identity))
+  (replace-vars triple rp-ctx))
+
+;;TODO refactor the two below
+(defmethod replace-vars :semi-join [[_ {:keys [args terms]}] replace-ctx]
+  (let [[new-args replace-ctx] (replace-arg-list args replace-ctx)
+        new-ctx (new-replacement-ctx args replace-ctx)
+        [new-terms _] (replace-vars* terms new-ctx)]
+    [[:semi-join
+      {:exists 'exists?
+       :args new-args
+       :terms new-terms}]
+     replace-ctx]))
+
+(defmethod replace-vars :anti-join [[_ {:keys [args terms]}] replace-ctx]
+  (let [[new-args replace-ctx] (replace-arg-list args replace-ctx)
+        new-ctx (new-replacement-ctx args replace-ctx)
+        [new-terms _] (replace-vars* terms new-ctx)]
+    [[:anti-join
+      {:not-exists 'not-exists?
+       :args new-args
+       :terms new-terms}]
+     replace-ctx]))
+
+(defmethod replace-vars :union-join [[_ {:keys [args branches]}] replace-ctx]
+  (let [[new-args replace-ctx] (replace-arg-list args replace-ctx)
+        new-ctx (new-replacement-ctx args replace-ctx)
+        [new-branches _] (reduce (fn [[brs ctx] branch]
+                                   (let [[new-br ctx] (replace-vars* branch ctx)]
+                                     [(conj brs new-br) ctx]))
+                                 [[] new-ctx]
+                                 branches)]
+    [[:union-join
+      {:union-join 'union-join
+       :args new-args
+       :branches new-branches}]
+     replace-ctx]))
+
+(comment
+  (def union-join '[:union-join
+                    {:union-join union-join,
+                     :args [age bar],
+                     :branches
+                     [[[:call
+                        {:form
+                         [:fn-call {:f >=, :args [[:logic-var age] [:literal 21] [:logic-var bar]]}]}]]]}])
+  (def rp-ctx (->replacment-ctx '{age foo} identity))
+  (replace-vars union-join rp-ctx))
+
+(defmethod replace-vars :call [[_ {:keys [form]} :as call] replace-ctx]
+  (let [[fn-call new-ctx] (replace-vars form replace-ctx)]
+    [[:call {:form fn-call}] new-ctx]))
+
+(defmethod replace-vars :fn-call [[_ {:keys [args]} :as fn-call] replace-ctx]
+  (let [[new-args new-ctx]
+        (reduce (fn [[new-args replace-ctx] arg]
+                  (let [[new-arg replace-ctx] (replace-vars arg replace-ctx)]
+                    [(conj new-args new-arg) replace-ctx]))
+                [[] replace-ctx]
+                args)]
+    [(update fn-call 1 assoc :args new-args) new-ctx]))
+
+(comment
+  (def call '[:call {:form
+                     [:fn-call
+                      {:f >=,
+                       :args
+                       [[:fn-call {:f *, :args [[:logic-var age] [:literal 2]]}]
+                        [:logic-var foo]]}]}])
+  (def rp-ctx (->replacment-ctx '{foo bar age 12} identity))
+  (replace-vars call rp-ctx))
+
+'[:sub-query
+  {:q q,
+   :query
+   {:find [[:logic-var other-age]],
+    :in [[:scalar age]],
+    :where
+    [[:triple
+      {:e [:logic-var i], :a :age, :v [:logic-var other-age]}]
+     [:call
+      {:form
+       [:fn-call
+        {:f >=,
+         :args
+         [[:logic-var other-age] [:logic-var age]]}]}]]}}]
+
+(comment
   (require 'sc.api)
 
+  (def sub-query (sc.api/letsc [7 -6]
+                               sub-query))
+  (def rp-ctx (->replacment-ctx {} unique-rule-arg-symbol))
+
+  (replace-vars sub-query rp-ctx))
 
 
+;; TODO :keys :order-by :aggregates
+(defmethod replace-vars :sub-query [[_ {:keys [query]} :as sub-query] replace-ctx]
+  (let [{:keys [find in where rules]} query]
+    (if-not rules
+      (let [[new-find replace-ctx] (reduce (fn [[new-args replace-ctx] [arg-type value :as arg]]
+                                             (case arg-type
+                                               :logic-var (let [[replacement replace-ctx] (get-replacement replace-ctx value)]
+                                                            [(conj new-args (wrap-replacement replacement)) replace-ctx])
+                                               :literal [(conj new-args arg) replace-ctx]))
+                                           [[] replace-ctx]
+                                           find)
+            [new-in replace-ctx] (reduce (fn [[new-args replace-ctx] [arg-type value :as arg]]
+                                           (case arg-type
+                                             :scalar (let [[replacement replace-ctx] (get-replacement replace-ctx value)]
+                                                       [(conj new-args [:scalar replacement]) replace-ctx])
+                                             [(conj new-args arg) replace-ctx]))
+                                         [[] replace-ctx]
+                                         in)
+            new-ctx (new-replacement-ctx (concat (map second find)
+                                                 (map second in))
+                                         replace-ctx)
+            [new-where _] (replace-vars* where new-ctx)]
+        [[:sub-query
+          {:q 'q
+           :query {:find new-find
+                   :in new-in
+                   :where new-where}}]
+         replace-ctx])
+      (throw (err/illegal-arg :rules-not-supported-in-subquery
+                              (s/unform ::rules rules))))))
+
+(defmethod replace-vars :rule [rule replace-ctx]
+  (let [[new-args new-replace-ctx]
+        (->> rule second :args
+             (reduce (fn [[new-args replace-ctx] [arg-type value :as arg]]
+                       (case arg-type
+                         :logic-var (let [[replacement replace-ctx] (get-replacement replace-ctx value)]
+                                      [(conj new-args (wrap-replacement replacement)) replace-ctx])
+                         :literal [(conj new-args arg) replace-ctx]))
+                     [[] replace-ctx]))]
+    [(update rule 1 assoc :args new-args) new-replace-ctx]))
+
+(comment
+  (def rule '[:rule {:name over-twenty-one?, :args [[:logic-var bar] [:literal 2] [:logic-var foo]]}])
+  (def rp-ctx (->replacment-ctx '{bar toto} identity))
+  (replace-vars rule rp-ctx))
+
+(defn replace-vars* [clauses replace-ctx]
+  (let [[new-clauses new-replace-ctx]
+        (reduce (fn [[res replace-ctx] clause]
+                  (let [[updated-clause new-replace-ctx] (replace-vars clause replace-ctx)]
+                    [(conj res updated-clause) new-replace-ctx]))
+                [[] replace-ctx]
+                clauses)]
+    [new-clauses new-replace-ctx]))
+
+(defn gensym-rule [{:keys [head body] :as rule}]
+  (let [args (:args head)
+        new-args (mapv unique-rule-arg-symbol args)
+        old->new (zipmap args new-args)
+        replace-ctx (->replacment-ctx old->new unique-rule-arg-symbol)]
+    (-> rule
+        (assoc :head (assoc head :args new-args))
+        (assoc :body (first (replace-vars* body replace-ctx))))))
+
+(comment
+  (gensym-rule
+   '{:head {:name over-twenty-one?, :args [age]},
+     :body
+     [[:call
+       {:form
+        [:fn-call {:f >=, :args [[:logic-var age] [:literal 21]]}]}]]}))
+
+(defn gensym-rules [rules]
+  (map gensym-rule rules))
+
+(comment
+  (gensym-rules
+   '[{:head {:name over-twenty-one?, :args [age]},
+      :body
+      [[:call
+        {:form
+         [:fn-call {:f >=, :args [[:logic-var age] [:literal 21]]}]}]]}
+     {:head {:name over-twenty-one?, :args [age]},
+      :body
+      [[:call
+        {:form
+         [:fn-call {:f >=, :args [[:logic-var age] [:literal 21]]}]}]]}]))
+
+
+(let [cnt (atom 0)]
+  (defn unique-rule-var [suffix]
+    (let [res (symbol (str "_rule_" @cnt "_" suffix))]
+      (swap! cnt inc)
+      res)))
+
+;; TODO don't suffix replaced vars in subcalls again
+(defn replace-var-fn [mapping]
+  (let [mapping (atom mapping)]
+    (fn [var]
+      (or (get @mapping var) (get (swap! mapping assoc var (unique-rule-var var)) var)))))
+
+(defn- replace-logic-vars-fn [replace-var]
+  (fn [form]
+    (if (and (simple-symbol? form) ((complement build-ins) form))
+      #_(assoc form 1 (replace-var (second form)))
+      (replace-var form)
+      form)))
+
+(defn- logic-vars->literals [var->literal form]
+  (if (and (vector? form) (= (first form) :logic-var) (contains? var->literal (second form)))
+    [:literal (var->literal (second form))]
+    form))
+
+(defn var->literal-substitution [var->literal where-clauses]
+  (mapv (fn [[type :as clause]]
+          (case type
+            :triple (walk/postwalk (partial logic-vars->literals var->literal) clause)
+            :semi-join clause ;; TODO
+            :anti-join clause ;; TODO
+            :union-join (-> clause
+                            (update-in [1 :args] (fn [args] (vec (remove #(contains? var->literal %) args))))
+                            (update-in [1 :branches] #(mapv (partial var->literal-substitution var->literal) %)))
+            :call (walk/postwalk (partial logic-vars->literals var->literal) clause)
+            :sub-query clause ;; TODO
+            ;; we should not see a rule here
+            ))
+        where-clauses))
+
+(comment
+
+  (walk/postwalk (replace-logic-vars-fn {}) #_{'age 'age2}
+                 '[[:call
+                    {:form
+                     [:fn-call {:f >=, :args [[:logic-var age] [:logic-var age][:value 21]]}]}]])
   )
+
+(declare expand-rules)
+
+(defn unique-symbol-fn [prefix]
+  (let [cnt (atom -1)]
+    (fn [suffix]
+      (symbol (str "_" prefix "_" (swap! cnt inc) "_" suffix)))))
+
+(def unique-rule-arg-symbol (unique-symbol-fn "rule_arg"))
+
+(defn var-inner->var-outer [inner-vars outer-args]
+  (->> (map (fn [var [type arg]]
+              (if (= type :logic-var)
+                (MapEntry/create var arg)
+                (MapEntry/create var (unique-rule-arg-symbol var))))
+            inner-vars outer-args)
+       (into {})))
+
+(comment
+  (require 'sc.api))
+
 
 (defn rewrite-rule [rule-name->rules {:keys [name args] :as _rule-invocation}]
   (let [rules (get rule-name->rules name)
         branches (->> rules
                       (mapv (fn [{:keys [head body] :as rule}]
-                              (let [var-inner->var-outer (var-inner->var-outer (:args head) args)
-                                    #_(zipmap (:args head) outer-vars)
-                                    var->literal (->> (map vector (:args head) args)
-                                                      (filter (comp #{:literal} first second))
-                                                      (map (fn [[original-var [_ value]]]
-                                                             [(var-inner->var-outer original-var) value]))
-                                                      (into {}))
-                                    _ (sc.api/spy)
-                                    _ (prn :var->literal var->literal)
-                                    replace-var (replace-var-fn var-inner->var-outer)]
-                                (->> (expand-rules rule-name->rules body)
-                                     (walk/postwalk (replace-logic-vars-fn replace-var))
-                                     (var->literal-substitution var->literal))))))]
+                              (let [var-inner->var-outer (zipmap (:args head) (map second args))
+                                    replace-ctx (->replacment-ctx var-inner->var-outer identity)]
+                                (-> (expand-rules rule-name->rules body)
+                                    (#(do (prn :expanded-rules %) %))
+                                    (replace-vars* replace-ctx)
+                                    (#(do (prn :after-replace %) %))
+                                    first
+                                    #_(walk/postwalk (replace-logic-vars-fn replace-var))
+                                    #_(var->literal-substitution var->literal))))))]
     [:union-join
      {:union-join 'union-join
       :args (->> (filter (comp #{:logic-var} first) args)
@@ -685,16 +975,36 @@
                :where [[i :age age]
                        (over-twenty-one? age)]
                :rules [[(over-twenty-one? age)
-                        [(>= age 21)]]
+                        [(>= (* age 2) 21)]]
                        [(over-twenty-one? age)
                         [(>= age 21)]]]}))
+
+
+#_(defn compose-maps [& ms]
+    (apply comp (reverse ms)))
+
+(defn compose-maps [m1 m2]
+  (->> (map (fn [[k v]] [k (m2 v)]) m1)
+       (filter second)
+       (into {})))
+
+(comment
+  ((compose-maps  {:a :b} {:b :c}) :a)
+  ((compose-maps  {:a :b} {:d :c}) :a)
+  ((compose-maps  {:a :b :d :e} {:b :c}) :a)
+  (keys (compose-maps  {:a :b} {:b :c}))
+
+  )
 
 
 (defn- plan-body [{where-clauses :where, apply-mapping ::apply-mapping, rules :rules, :as query}]
   (let [in-rels (plan-in-tables query)
         {::keys [param-vars]} (meta in-rels)
 
-        rule-name->rules (group-by (comp :name :head) rules)
+        rule-name->rules (-> (->> rules
+                                  gensym-rules
+                                  (group-by (comp :name :head)))
+                             #_(doto clojure.pprint/pprint))
         where-clauses (-> (expand-rules rule-name->rules where-clauses)
                           (doto clojure.pprint/pprint))
 
