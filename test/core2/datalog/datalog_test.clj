@@ -1379,22 +1379,23 @@
                                                              [i :name "Ivan"]
                                                              [i :last-name "Ivanov"]]]}
                                                   (assoc :basis {:tx tx})))))
-      #_
-      (t/is (= #{["Petr"]} (xt/q (xt/db *api*) '{:find [name]
-                                                 :where [[i :name name]
-                                                         (not (is-ivan-or-bob? i))]
-                                                 :rules [[(is-ivan-or-bob? i)
-                                                          [i :name "Ivan"]]
-                                                         [(is-ivan-or-bob? i)
-                                                          [i :name "Bob"]]]})))
-      #_
-      (t/is (= #{[:ivan]
-                 [:petr]} (xt/q (xt/db *api*) '{:find [i]
-                                                :where [(is-ivan-or-petr? i)]
-                                                :rules [[(is-ivan-or-petr? i)
-                                                         [i :name "Ivan"]]
-                                                        [(is-ivan-or-petr? i)
-                                                         [i :name "Petr"]]]}))))
+
+      (t/is (= [{:name "Petr"}] (c2/datalog-query tu/*node* '{:find [name]
+                                                              :where [[i :name name]
+                                                                      (not-exists? [i]
+                                                                                   (is-ivan-or-georgy? i))]
+                                                              :rules [[(is-ivan-or-georgy? i)
+                                                                       [i :name "Ivan"]]
+                                                                      [(is-ivan-or-georgy? i)
+                                                                       [i :name "Georgy"]]]})))
+
+      (t/is (= [{:i :ivan}
+                {:i :petr}] (c2/datalog-query tu/*node* '{:find [i]
+                                                          :where [(is-ivan-or-petr? i)]
+                                                          :rules [[(is-ivan-or-petr? i)
+                                                                   [i :name "Ivan"]]
+                                                                  [(is-ivan-or-petr? i)
+                                                                   [i :name "Petr"]]]}))))
 
 
     )

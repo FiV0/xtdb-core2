@@ -957,7 +957,9 @@
 (defn- expand-rules [rule-name->rules where-clauses]
   (mapv (fn [[type arg :as clause]]
           (case type
+            (:triple :call) clause
             :rule (rewrite-rule rule-name->rules arg)
+            (:semi-join :anti-join) (update clause 1 assoc :terms (expand-rules rule-name->rules (-> clause second :terms)))
             clause))
         where-clauses))
 
