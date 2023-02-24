@@ -727,21 +727,6 @@
   (def rp-ctx (->replacment-ctx '{foo bar age 12} identity))
   (replace-vars call rp-ctx))
 
-'[:sub-query
-  {:q q,
-   :query
-   {:find [[:logic-var other-age]],
-    :in [[:scalar age]],
-    :where
-    [[:triple
-      {:e [:logic-var i], :a :age, :v [:logic-var other-age]}]
-     [:call
-      {:form
-       [:fn-call
-        {:f >=,
-         :args
-         [[:logic-var other-age] [:logic-var age]]}]}]]}}]
-
 (comment
   (require 'sc.api)
 
@@ -750,7 +735,6 @@
   (def rp-ctx (->replacment-ctx {} unique-rule-arg-symbol))
 
   (replace-vars sub-query rp-ctx))
-
 
 ;; TODO :keys :order-by :aggregates
 (defmethod replace-vars :sub-query [[_ {:keys [query]} :as sub-query] replace-ctx]
@@ -887,25 +871,25 @@
 (comment
   (require 'sc.api))
 
-
-(defn rewrite-rule [rule-name->rules {:keys [name args] :as _rule-invocation}]
-  (let [rules (get rule-name->rules name)
-        branches (->> rules
-                      (mapv (fn [{:keys [head body] :as rule}]
-                              (let [var-inner->var-outer (zipmap (:args head) (map second args))
-                                    replace-ctx (->replacment-ctx var-inner->var-outer identity)]
-                                (-> (expand-rules rule-name->rules body)
-                                    ;; (#(do (prn :expanded-rules %) %))
-                                    (replace-vars* replace-ctx)
-                                    ;; (#(do (prn :after-replace %) %))
-                                    first
-                                    #_(walk/postwalk (replace-logic-vars-fn replace-var))
-                                    #_(var->literal-substitution var->literal))))))]
-    [:union-join
-     {:union-join 'union-join
-      :args (->> (filter (comp #{:logic-var} first) args)
-                 (mapv second))
-      :branches branches}]))
+(defn rewrite-rule [rule-name->rules {:keys [name args] :as rule-invocation}]
+  (if-let [rules (get rule-name->rules name)]
+    (if (= (count args) (-> rules first :head :args count))
+      (let [branches (->> rules
+                          (mapv (fn [{:keys [head body] :as _rule}]
+                                  (let [var-inner->var-outer (zipmap (:args head) (map second args))
+                                        replace-ctx (->replacment-ctx var-inner->var-outer identity)]
+                                    (-> (expand-rules rule-name->rules body)
+                                        (replace-vars* replace-ctx)
+                                        first)))))]
+        [:union-join
+         {:union-join 'union-join
+          :args (->> (filter (comp #{:logic-var} first) args)
+                     (mapv second))
+          :branches branches}])
+      (throw (err/illegal-arg :rule-wrong-arity
+                              #_(s/unform ::rule rule-invocation))))
+    (throw (err/illegal-arg :unknown-rule
+                            (s/unform ::rule rule-invocation)))))
 
 (comment
   (def rule-name->rules '{over-twenty-one?
@@ -995,6 +979,14 @@
 
   )
 
+(defn check-rule-arity [rule-name->rules]
+  (run! (fn [[name rules]]
+          (let [arities (map #(-> % :head :args count) rules)]
+            (when-not (apply = arities)
+              (throw (err/illegal-arg :rule-definitions-require-unique-arity
+                                      {:rule-name name})))))
+        rule-name->rules))
+
 
 (defn- plan-body [{where-clauses :where, apply-mapping ::apply-mapping, rules :rules, :as query}]
   (let [in-rels (plan-in-tables query)
@@ -1002,8 +994,8 @@
 
         rule-name->rules (-> (->> rules
                                   gensym-rules
-                                  (group-by (comp :name :head)))
-                             #_(doto clojure.pprint/pprint))
+                                  (group-by (comp :name :head))))
+        _ (check-rule-arity rule-name->rules)
         where-clauses (-> (expand-rules rule-name->rules where-clauses)
                           (doto clojure.pprint/pprint))
 

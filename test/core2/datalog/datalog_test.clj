@@ -1153,29 +1153,6 @@
 
   )
 
-#_#_#_
-(deftest uni-test
-  (t/is (= nil (c2/datalog-query tu/*node*
-                                 '{:find [i]
-                                   :where [[(== i 1)]]}))))
-
-(deftest uni-test2
-  (let [tx (c2/submit-tx tu/*node* [[:put {:id  1 :foo "bar"}]])]
-    (t/is (= [{:i 1}]
-             (c2/datalog-query tu/*node*
-                               '{:find [i]
-                                 :where [[i :id]
-                                         [(= 1 1)]]})))))
-
-(deftest uni-test3
-  (let [tx (c2/submit-tx tu/*node* [[:put {:id  1 :foo "bar"}]])]
-    (t/is (= [{:i 1}]
-             (c2/datalog-query tu/*node*
-                               '{:find [i]
-                                 :where [[i :id]
-                                         (union-join []
-                                                     [i :id]
-                                                     [(= 1 1)])]})))))
 
 
 
@@ -1216,17 +1193,6 @@
                                                     :where [[i :age age]
                                                             [(>= age 21)]]}
                                                   (assoc :basis {:tx tx}))))))
-    #_
-    (t/is (= [{:i :ivan}]
-             (c2/datalog-query tu/*node*
-                               (-> '{:find [i]
-                                     :where [[i :age age]
-                                             (exists? [age]
-                                                      [(>= age 21)])]}
-                                   (assoc :basis {:tx tx}))))
-
-          "find people who have children")
-
 
     (t/testing "rule using required bound args"
       (t/is (= [{:i :ivan}] (c2/datalog-query tu/*node*
@@ -1422,34 +1388,28 @@
                                                              [i :last-name "Ivanov"]]]}
                                                   (assoc :basis {:tx tx})))))))
 
-
-
-
-
-  #_
   (t/is (thrown-with-msg?
          IllegalArgumentException
-         #"Unknown rule:"
+         #":unknown-rule"
          (c2/datalog-query tu/*node* '{:find [i]
                                        :where [[i :age age]
                                                (over-twenty-one? age)]})))
-  #_#_
-  (t/is (thrown-with-msg?
-         IllegalArgumentException
-         #"Rule invocation has wrong arity, expected: 1"
-         (xt/q (xt/db *api*) '{:find [i]
-                               :where [[i :age age]
-                                       (over-twenty-one? i age)]
-                               :rules [[(over-twenty-one? x)
-                                        [(>= x 21)]]]})))
 
   (t/is (thrown-with-msg?
          IllegalArgumentException
-         #"Rule definitions require same arity:"
-         (xt/q (xt/db *api*) '{:find [i]
-                               :where [[i :age age]
-                                       (is-ivan-or-petr? i name)]
-                               :rules [[(is-ivan-or-petr? i name)
-                                        [i :name "Ivan"]]
-                                       [(is-ivan-or-petr? i)
-                                        [i :name "Petr"]]]}))))
+         #":rule-wrong-arity"
+         (c2/datalog-query tu/*node* '{:find [i]
+                                       :where [[i :age age]
+                                               (over-twenty-one? i age)]
+                                       :rules [[(over-twenty-one? x)
+                                                [(>= x 21)]]]})))
+  (t/is (thrown-with-msg?
+         IllegalArgumentException
+         #":rule-definitions-require-unique-arity"
+         (c2/datalog-query tu/*node* '{:find [i]
+                                       :where [[i :age age]
+                                               (is-ivan-or-petr? i name)]
+                                       :rules [[(is-ivan-or-petr? i name)
+                                                [i :name "Ivan"]]
+                                               [(is-ivan-or-petr? i)
+                                                [i :name "Petr"]]]}))))
