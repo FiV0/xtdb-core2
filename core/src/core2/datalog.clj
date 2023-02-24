@@ -531,76 +531,9 @@
 
     (mega-join (into [plan] sub-queries) param-vars)))
 
-(let [cnt (atom 0)]
-  (defn unique-rule-var [suffix]
-    (let [res (symbol (str "_rule_" @cnt "_" suffix))]
-      (swap! cnt inc)
-      res)))
-
-;; TODO don't suffix replaced vars in subcalls again
-(defn replace-var-fn [mapping]
-  (let [mapping (atom mapping)]
-    (fn [var]
-      (or (get @mapping var) (get (swap! mapping assoc var (unique-rule-var var)) var)))))
-
-(defn- replace-logic-vars-fn [replace-var]
-  (fn [form]
-    (if (and (simple-symbol? form) ((complement build-ins) form))
-      #_(assoc form 1 (replace-var (second form)))
-      (replace-var form)
-      form)))
-
-(defn- logic-vars->literals [var->literal form]
-  (if (and (vector? form) (= (first form) :logic-var) (contains? var->literal (second form)))
-    [:literal (var->literal (second form))]
-    form))
-
-(defn var->literal-substitution [var->literal where-clauses]
-  (mapv (fn [[type :as clause]]
-          (case type
-            :triple (walk/postwalk (partial logic-vars->literals var->literal) clause)
-            :semi-join clause ;; TODO
-            :anti-join clause ;; TODO
-            :union-join (-> clause
-                            (update-in [1 :args] (fn [args] (vec (remove #(contains? var->literal %) args))))
-                            (update-in [1 :branches] #(mapv (partial var->literal-substitution var->literal) %)))
-            :call (walk/postwalk (partial logic-vars->literals var->literal) clause)
-            :sub-query clause ;; TODO
-            ;; we should not see a rule here
-            ))
-        where-clauses))
-
-(comment
-
-  (walk/postwalk (replace-logic-vars-fn {}) #_{'age 'age2}
-                 '[[:call
-                    {:form
-                     [:fn-call {:f >=, :args [[:logic-var age] [:logic-var age][:value 21]]}]}]])
-  )
-
-(declare expand-rules)
-
-(defn unique-symbol-fn [prefix]
-  (let [cnt (atom -1)]
-    (fn [suffix]
-      (symbol (str "_" prefix "_" (swap! cnt inc) "_" suffix)))))
-
-(def unique-rule-arg-symbol (unique-symbol-fn "rule_arg"))
-
-(defn var-inner->var-outer [inner-vars outer-args]
-  (->> (map (fn [var [type arg]]
-              (if (= type :logic-var)
-                (MapEntry/create var arg)
-                (MapEntry/create var (unique-rule-arg-symbol var))))
-            inner-vars outer-args)
-       (into {})))
-
-(comment
-  (require 'sc.api))
-
-;; replace context
-#_{:var->replacement {}
-   :replacement-fn (fn [sym] 'new-sy)}
+;;;;;;;;;;;;;;;;;;;;;;;;
+;; rule substitution
+;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defrecord ReplacementCtx [var->replacement replacement-fn])
 
@@ -728,12 +661,18 @@
   (replace-vars call rp-ctx))
 
 (comment
-  (require 'sc.api)
-
-  (def sub-query (sc.api/letsc [7 -6]
-                               sub-query))
-  (def rp-ctx (->replacment-ctx {} unique-rule-arg-symbol))
-
+  (def sub-query '[:sub-query
+                   {:q q,
+                    :query
+                    {:find [[:logic-var other-age]],
+                     :in [[:scalar age]],
+                     :where
+                     [[:triple {:e [:logic-var i], :a :age, :v [:logic-var other-age]}]
+                      [:call
+                       {:form
+                        [:fn-call
+                         {:f >=, :args [[:logic-var other-age] [:logic-var age]]}]}]]}}])
+  (def rp-ctx (->replacment-ctx {} (unique-symbol-fn "rule_arg")))
   (replace-vars sub-query rp-ctx))
 
 ;; TODO :keys :order-by :aggregates
@@ -792,22 +731,20 @@
                 clauses)]
     [new-clauses new-replace-ctx]))
 
+(defn unique-symbol-fn [prefix]
+  (let [cnt (atom -1)]
+    (fn [suffix]
+      (symbol (str "_" prefix "_" (swap! cnt inc) "_" suffix)))))
+
 (defn gensym-rule [{:keys [head body] :as rule}]
-  (let [args (:args head)
+  (let [unique-rule-arg-symbol (unique-symbol-fn "rule_arg")
+        args (:args head)
         new-args (mapv unique-rule-arg-symbol args)
         old->new (zipmap args new-args)
         replace-ctx (->replacment-ctx old->new unique-rule-arg-symbol)]
     (-> rule
         (assoc :head (assoc head :args new-args))
         (assoc :body (first (replace-vars* body replace-ctx))))))
-
-(comment
-  (gensym-rule
-   '{:head {:name over-twenty-one?, :args [age]},
-     :body
-     [[:call
-       {:form
-        [:fn-call {:f >=, :args [[:logic-var age] [:literal 21]]}]}]]}))
 
 (defn gensym-rules [rules]
   (map gensym-rule rules))
@@ -825,51 +762,7 @@
         {:form
          [:fn-call {:f >=, :args [[:logic-var age] [:literal 21]]}]}]]}]))
 
-
-(let [cnt (atom 0)]
-  (defn unique-rule-var [suffix]
-    (let [res (symbol (str "_rule_" @cnt "_" suffix))]
-      (swap! cnt inc)
-      res)))
-
-;; TODO don't suffix replaced vars in subcalls again
-(defn replace-var-fn [mapping]
-  (let [mapping (atom mapping)]
-    (fn [var]
-      (or (get @mapping var) (get (swap! mapping assoc var (unique-rule-var var)) var)))))
-
-(defn- replace-logic-vars-fn [replace-var]
-  (fn [form]
-    (if (and (simple-symbol? form) ((complement build-ins) form))
-      #_(assoc form 1 (replace-var (second form)))
-      (replace-var form)
-      form)))
-
-(defn- logic-vars->literals [var->literal form]
-  (if (and (vector? form) (= (first form) :logic-var) (contains? var->literal (second form)))
-    [:literal (var->literal (second form))]
-    form))
-
-
 (declare expand-rules)
-
-(defn unique-symbol-fn [prefix]
-  (let [cnt (atom -1)]
-    (fn [suffix]
-      (symbol (str "_" prefix "_" (swap! cnt inc) "_" suffix)))))
-
-(def unique-rule-arg-symbol (unique-symbol-fn "rule_arg"))
-
-(defn var-inner->var-outer [inner-vars outer-args]
-  (->> (map (fn [var [type arg]]
-              (if (= type :logic-var)
-                (MapEntry/create var arg)
-                (MapEntry/create var (unique-rule-arg-symbol var))))
-            inner-vars outer-args)
-       (into {})))
-
-(comment
-  (require 'sc.api))
 
 (defn rewrite-rule [rule-name->rules {:keys [name args] :as rule-invocation}]
   (if-let [rules (get rule-name->rules name)]
@@ -905,18 +798,7 @@
                                [:fn-call {:f >=, :args [[:logic-var age] [:value 21]]}]}]]}]})
 
   (rewrite-rule rule-name->rules '{:name over-twenty-one?, :args [[:logic-var age]]})
-  (rewrite-rule rule-name->rules '{:name over-twenty-one?, :args [[:value 21]]})
-
-
-  (sc.api/letsc [20 -10]
-                clause
-                ;; (-> clause second :branches)
-                ;; (mapv (partial expand-rules rule-name->rules) (-> clause second :branches))
-                ;; (expand-rules rule-name->rules (-> clause second :branches first))
-                (rewrite-rule rule-name->rules (-> clause second :branches first second))
-
-                )
-  )
+  (rewrite-rule rule-name->rules '{:name over-twenty-one?, :args [[:value 21]]}))
 
 
 (defn- expand-rules [rule-name->rules where-clauses]
@@ -944,41 +826,6 @@
             clause))
         where-clauses))
 
-(comment
-  (s/conform ::query '{:find [e]
-                       :where [(union-join [e]
-                                           [e :role :developer]
-                                           [e :age 30])
-                               (union-join [e]
-                                           [e :id :petr]
-                                           [e :id :ivan])]})
-  (s/conform ::query
-
-             '{:find [i]
-               :where [[i :age age]
-                       (over-twenty-one? age)]
-               :rules [[(over-twenty-one? age)
-                        [(>= (* age 2) 21)]]
-                       [(over-twenty-one? age)
-                        [(>= age 21)]]]}))
-
-
-#_(defn compose-maps [& ms]
-    (apply comp (reverse ms)))
-
-(defn compose-maps [m1 m2]
-  (->> (map (fn [[k v]] [k (m2 v)]) m1)
-       (filter second)
-       (into {})))
-
-(comment
-  ((compose-maps  {:a :b} {:b :c}) :a)
-  ((compose-maps  {:a :b} {:d :c}) :a)
-  ((compose-maps  {:a :b :d :e} {:b :c}) :a)
-  (keys (compose-maps  {:a :b} {:b :c}))
-
-  )
-
 (defn check-rule-arity [rule-name->rules]
   (run! (fn [[name rules]]
           (let [arities (map #(-> % :head :args count) rules)]
@@ -986,7 +833,6 @@
               (throw (err/illegal-arg :rule-definitions-require-unique-arity
                                       {:rule-name name})))))
         rule-name->rules))
-
 
 (defn- plan-body [{where-clauses :where, apply-mapping ::apply-mapping, rules :rules, :as query}]
   (let [in-rels (plan-in-tables query)

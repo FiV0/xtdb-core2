@@ -1088,74 +1088,6 @@
                                        (assoc :basis {:tx !tx}))))
               "b is unified")))))
 
-(comment
-  (s/explain :core2.datalog/query
-             '{:find [age]
-               :where [(over-twenty-one? age)]
-               :in [age]
-               :rules [[(over-twenty-one? age)
-                        [(>= age 21)]]]})
-
-  (s/conform :core2.datalog/query '{:find [i]
-                                    :where [[i :age age]
-                                            (over-twenty-one? age)]
-                                    :rules [[(over-twenty-one? age)
-                                             [(>= age 21)]]]})
-
-  (s/conform :core2.datalog/query '{:find [i age]
-                                    :where [[i :age age]
-                                            (older? age)]
-                                    :rules [[(older? age)
-                                             (not-exists? [age]
-                                                          [i :age age2]
-                                                          [(> age2 age)])]]})
-
-
-  (s/conform :core2.datalog/query '{:find [i]
-                                    :where [[i :age age]
-                                            (older-ages age other-age)]
-                                    :rules [[(older-ages age other-age)
-                                             (q {:find [other-age]
-                                                 :in [age]
-                                                 :where [[i :age other-age]
-                                                         [(>= other-age age)]]})]]})
-
-
-
-  ;; age  id
-  ;;  2    a
-  ;;  3    b
-  ;;  4    c
-
-  ;; result
-  ;; a 2 b
-  ;; a 2 c
-  ;; b 3 c
-
-  '{:find [i age u]
-    :where [(older-users age u)
-            [i :age age]
-            [u :id]]
-    :rules [[(older-users [age] u)
-             [u :age age2]
-             (> age2 age)]]}
-
-
-  '{:find [i i2]
-    :where [[i :age age]
-            (over-age? age 21)
-            [i2 :age age2]
-            (over-age? age age2)]
-    :rules [[(over-age? [age required-age])
-             [(>= age required-age)]]]}
-
-
-
-  )
-
-
-
-
 
 (deftest test-basic-rules
   (t/is (= '[[:triple {:e [:logic-var i], :a :age, :v [:logic-var age]}]
@@ -1346,22 +1278,26 @@
                                                              [i :last-name "Ivanov"]]]}
                                                   (assoc :basis {:tx tx})))))
 
-      (t/is (= [{:name "Petr"}] (c2/datalog-query tu/*node* '{:find [name]
-                                                              :where [[i :name name]
-                                                                      (not-exists? [i]
-                                                                                   (is-ivan-or-georgy? i))]
-                                                              :rules [[(is-ivan-or-georgy? i)
-                                                                       [i :name "Ivan"]]
-                                                                      [(is-ivan-or-georgy? i)
-                                                                       [i :name "Georgy"]]]})))
+      (t/is (= [{:name "Petr"}] (c2/datalog-query tu/*node*
+                                                  (-> '{:find [name]
+                                                        :where [[i :name name]
+                                                                (not-exists? [i]
+                                                                             (is-ivan-or-georgy? i))]
+                                                        :rules [[(is-ivan-or-georgy? i)
+                                                                 [i :name "Ivan"]]
+                                                                [(is-ivan-or-georgy? i)
+                                                                 [i :name "Georgy"]]]}
+                                                      (assoc :basis {:tx tx})))))
 
       (t/is (= [{:i :ivan}
-                {:i :petr}] (c2/datalog-query tu/*node* '{:find [i]
-                                                          :where [(is-ivan-or-petr? i)]
-                                                          :rules [[(is-ivan-or-petr? i)
-                                                                   [i :name "Ivan"]]
-                                                                  [(is-ivan-or-petr? i)
-                                                                   [i :name "Petr"]]]}))))
+                {:i :petr}] (c2/datalog-query tu/*node*
+                                              (-> '{:find [i]
+                                                    :where [(is-ivan-or-petr? i)]
+                                                    :rules [[(is-ivan-or-petr? i)
+                                                             [i :name "Ivan"]]
+                                                            [(is-ivan-or-petr? i)
+                                                             [i :name "Petr"]]]}
+                                                  (assoc :basis {:tx tx}))))))
 
     (t/testing "union-join with rules"
       (t/is (= [{:i :ivan}] (c2/datalog-query tu/*node*
