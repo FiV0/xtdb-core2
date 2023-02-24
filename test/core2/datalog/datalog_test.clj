@@ -1397,18 +1397,43 @@
                                                                   [(is-ivan-or-petr? i)
                                                                    [i :name "Petr"]]]}))))
 
+    (t/testing "union-join with rules"
+      (t/is (= [{:i :ivan}] (c2/datalog-query tu/*node*
+                                              (-> '{:find [i]
+                                                    :where [(union-join [i]
+                                                                        (is-ivan-or-bob? i))]
+                                                    :rules [[(is-ivan-or-bob? i)
+                                                             [i :name "Bob"]]
+                                                            [(is-ivan-or-bob? i)
+                                                             [i :name "Ivan"]
+                                                             [i :last-name "Ivanov"]]]}
+                                                  (assoc :basis {:tx tx}))))))
 
-    )
+
+    (t/testing "subquery with rule"
+      (t/is (= [{:i :ivan}] (c2/datalog-query tu/*node*
+                                              (-> '{:find [i]
+                                                    :where [(q {:find [i]
+                                                                :where [(is-ivan-or-bob? i)]})]
+                                                    :rules [[(is-ivan-or-bob? i)
+                                                             [i :name "Bob"]]
+                                                            [(is-ivan-or-bob? i)
+                                                             [i :name "Ivan"]
+                                                             [i :last-name "Ivanov"]]]}
+                                                  (assoc :basis {:tx tx})))))))
 
 
-  #_#_#_
+
+
+
+  #_
   (t/is (thrown-with-msg?
          IllegalArgumentException
          #"Unknown rule:"
-         (xt/q (xt/db *api*) '{:find [i]
-                               :where [[i :age age]
-                                       (over-twenty-one? age)]})))
-
+         (c2/datalog-query tu/*node* '{:find [i]
+                                       :where [[i :age age]
+                                               (over-twenty-one? age)]})))
+  #_#_
   (t/is (thrown-with-msg?
          IllegalArgumentException
          #"Rule invocation has wrong arity, expected: 1"

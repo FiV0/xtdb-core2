@@ -866,28 +866,6 @@
     [:literal (var->literal (second form))]
     form))
 
-(defn var->literal-substitution [var->literal where-clauses]
-  (mapv (fn [[type :as clause]]
-          (case type
-            :triple (walk/postwalk (partial logic-vars->literals var->literal) clause)
-            :semi-join clause ;; TODO
-            :anti-join clause ;; TODO
-            :union-join (-> clause
-                            (update-in [1 :args] (fn [args] (vec (remove #(contains? var->literal %) args))))
-                            (update-in [1 :branches] #(mapv (partial var->literal-substitution var->literal) %)))
-            :call (walk/postwalk (partial logic-vars->literals var->literal) clause)
-            :sub-query clause ;; TODO
-            ;; we should not see a rule here
-            ))
-        where-clauses))
-
-(comment
-
-  (walk/postwalk (replace-logic-vars-fn {}) #_{'age 'age2}
-                 '[[:call
-                    {:form
-                     [:fn-call {:f >=, :args [[:logic-var age] [:logic-var age][:value 21]]}]}]])
-  )
 
 (declare expand-rules)
 
@@ -917,9 +895,9 @@
                               (let [var-inner->var-outer (zipmap (:args head) (map second args))
                                     replace-ctx (->replacment-ctx var-inner->var-outer identity)]
                                 (-> (expand-rules rule-name->rules body)
-                                    (#(do (prn :expanded-rules %) %))
+                                    ;; (#(do (prn :expanded-rules %) %))
                                     (replace-vars* replace-ctx)
-                                    (#(do (prn :after-replace %) %))
+                                    ;; (#(do (prn :after-replace %) %))
                                     first
                                     #_(walk/postwalk (replace-logic-vars-fn replace-var))
                                     #_(var->literal-substitution var->literal))))))]
@@ -946,20 +924,39 @@
   (rewrite-rule rule-name->rules '{:name over-twenty-one?, :args [[:value 21]]})
 
 
-  (sc.api/letsc [94 -7]
-                (->> (map vector (:args head) args)
-                     #_(filter (comp #{:value} first second))
-                     #_(map (fn [[original-var literal]]
-                              [(var-inner->var-outer original-var) literal]))
-                     #_(into {})))
+  (sc.api/letsc [20 -10]
+                clause
+                ;; (-> clause second :branches)
+                ;; (mapv (partial expand-rules rule-name->rules) (-> clause second :branches))
+                ;; (expand-rules rule-name->rules (-> clause second :branches first))
+                (rewrite-rule rule-name->rules (-> clause second :branches first second))
+
+                )
   )
+
 
 (defn- expand-rules [rule-name->rules where-clauses]
   (mapv (fn [[type arg :as clause]]
           (case type
             (:triple :call) clause
+
+            (:semi-join :anti-join)
+            (->> clause second :terms
+                 (expand-rules rule-name->rules)
+                 (update clause 1 assoc :terms ))
+
+            :union-join
+            (->> clause second :branches
+                 (mapv (partial expand-rules rule-name->rules))
+                 (update clause 1 assoc :branches))
+
+            :sub-query
+            (->> clause second :query :where
+                 (expand-rules rule-name->rules)
+                 (update-in clause [1 :query] assoc :where))
+
             :rule (rewrite-rule rule-name->rules arg)
-            (:semi-join :anti-join) (update clause 1 assoc :terms (expand-rules rule-name->rules (-> clause second :terms)))
+
             clause))
         where-clauses))
 
