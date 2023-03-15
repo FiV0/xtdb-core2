@@ -6,7 +6,8 @@
             [core2.logical-plan :as lp]
             [core2.operator :as op]
             [core2.util :as util]
-            [core2.vector.writer :as vw])
+            [core2.vector.writer :as vw]
+            [core2.core.pull :as pull])
   (:import (clojure.lang MapEntry)
            (core2.operator IRaQuerySource)
            (java.lang AutoCloseable)
@@ -31,9 +32,18 @@
         :fn-call ::fn-call
         :literal ::value))
 
+(s/def ::pull-spec (s/coll-of keyword? :kind vector?))
+
+(s/def ::pull-arg
+  (s/cat :pull #{'pull}
+         :logic-var ::logic-var
+         :table simple-symbol?
+         :pull-spec ::pull-spec))
+
 (s/def ::find-arg
   (s/or :logic-var ::logic-var
-        :form ::form))
+        :form ::form
+        :pull ::pull-arg))
 
 (s/def ::semi-join
   (s/cat :exists '#{exists?}
@@ -931,7 +941,29 @@
                             (case arg-type
                               :logic-var (-> arg (with-meta {::grouping-vars #{arg}, ::col arg}))
                               :form (let [{::keys [col]} (meta find-arg)]
-                                      (plan-head-form col arg)))])))))))
+                                      (plan-head-form col arg))
+                              :pull (with-meta 'result {::col 'result})
+
+
+                              #_(let [{:keys [logic-var table pull-spec]} arg]
+                                  (with-meta (pull/compile-eql-to-ra pull-spec table)
+                                    {::col logic-var})))])))))))
+
+
+
+(defn- plan-pull [plan {find-args :find}]
+  (reduce (fn [plan [arg-type arg]]
+            (case arg-type
+              :pull (let [{:keys [logic-var table pull-spec]} arg
+                          eql-plan (pull/compile-eql-to-ra pull-spec table)
+                          {::pull/keys [col]} (meta eql-plan)]
+                      [:left-outer-join
+                       [{logic-var col}]
+                       plan
+                       eql-plan])
+              plan))
+          plan
+          find-args))
 
 (defn- plan-find [{find-args :find, rename-keys :keys} head-exprs]
   (let [clauses (->> find-args
@@ -942,6 +974,7 @@
                                (-> (if (= col expr) col {col expr})
                                    (with-meta {::var col}))))
                            (or rename-keys (repeat nil))))]
+    ;; (sc.api/spy)
     (-> clauses
         (with-meta {::vars (->> clauses (into #{} (map (comp ::var meta))))}))))
 
@@ -980,6 +1013,7 @@
            plan)]
         (with-meta (-> (meta plan) (assoc ::vars (::vars (meta group-by-clauses))))))))
 
+
 (defn- wrap-head [plan query]
   (let [head-exprs (plan-head-exprs query)
         find-clauses (plan-find query head-exprs)
@@ -989,6 +1023,7 @@
     (-> plan
         (cond-> group-by-clauses (wrap-group-by group-by-clauses)
                 order-by-clauses (wrap-order-by order-by-clauses))
+        (plan-pull query)
         (wrap-find find-clauses))))
 
 (defn- wrap-top [plan {:keys [limit offset]}]
@@ -1057,7 +1092,7 @@
         {::keys [in-bindings]} (meta plan)
 
         plan (-> plan
-                 #_(doto clojure.pprint/pprint)
+                 (doto clojure.pprint/pprint)
                  #_(->> (binding [*print-meta* true]))
                  (lp/rewrite-plan {})
                  #_(doto clojure.pprint/pprint)
