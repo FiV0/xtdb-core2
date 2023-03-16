@@ -177,8 +177,8 @@
              (set (c2/q tu/*node*
                         (-> '{:find [film-name bond-name]
                               :in [film]
-                              :where [[film :film--name film-name]
-                                      [film :film--bond bond]
+                              :where [[film :film/name film-name]
+                                      [film :film/bond bond]
                                       [bond :person--name bond-name]]}
                             (assoc :basis {:tx tx}))
                         "skyfall")))
@@ -191,8 +191,8 @@
              (set (c2/q tu/*node*
                         (-> '{:find [film-name bond-name]
                               :in [bond]
-                              :where [[film :film--name film-name]
-                                      [film :film--bond bond]
+                              :where [[film :film/name film-name]
+                                      [film :film/bond bond]
                                       [bond :person--name bond-name]]}
                             (assoc :basis {:tx tx}))
                         "daniel-craig")))

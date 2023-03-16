@@ -8,7 +8,8 @@
             [core2.types :as types]
             [core2.util :as util]
             [core2.vector.indirect :as iv]
-            [juxt.clojars-mirrors.integrant.core :as ig])
+            [juxt.clojars-mirrors.integrant.core :as ig]
+            [clojure.string :as str])
   (:import [clojure.lang MapEntry]
            core2.buffer_pool.IBufferPool
            core2.object_store.ObjectStore
@@ -104,8 +105,19 @@
 (defn- ->table-metadata-obj-key [chunk-idx table-name]
   (format "chunk-%s/%s/metadata.arrow" (util/->lex-hex-string chunk-idx) table-name))
 
+(comment
+  (require 'sc.api)
+
+  (sc.api/letsc [1 -1]
+                column-name))
+
+(defn- sanitize-column-name [column-name]
+  (sc.api/spy)
+  (str/replace column-name \/ \.))
+
 (defn ->chunk-obj-key [chunk-idx table-name column-name]
-  (format "chunk-%s/%s/content-%s.arrow" (util/->lex-hex-string chunk-idx) table-name column-name))
+  (format "chunk-%s/%s/content-%s.arrow" (util/->lex-hex-string chunk-idx) table-name
+          (sanitize-column-name column-name)))
 
 (defn- obj-key->chunk-idx [obj-key]
   (some-> (second (re-matches #"chunk-metadata/(\p{XDigit}+).transit.json" obj-key))

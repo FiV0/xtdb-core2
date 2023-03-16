@@ -464,6 +464,25 @@
                   [5100 5399 300] [5400 5699 300] [5700 5999 300]]
                  (row-id-ranges "chunk-2bb8/device-readings/content-battery-level.arrow")))))))
 
+(t/deftest can-ingest-attributes-with-slashes
+  (let [node-dir (util/->path "target/can-ingest-attributes-with-slashes")]
+    (util/delete-dir node-dir)
+
+    (with-open [node (tu/->local-node {:node-dir node-dir})]
+      (let [^ObjectStore os (tu/component node ::os/file-system-object-store)
+            ^IMetadataManager mm (tu/component node ::meta/metadata-manager)
+            tx (c2.d/submit-tx node [[:put {:id "foo" :foo/bar "bar"}]])]
+        (t/is (= tx (tu/then-await-tx* tx node)))
+        (tu/finish-chunk! node)
+        (let [objs (.listObjects os)]
+          (t/is (= 1 (count (filter #(re-matches #"^chunk-\p{XDigit}+/temporal\.arrow$" %) objs))))
+          (t/is (= 1 (count (filter #(re-matches #"temporal-snapshots/\p{XDigit}+.*" %) objs))))
+          (t/is (= 1 (count (filter #(re-matches #"chunk-\p{XDigit}+/xt_docs/metadata\.arrow" %) objs))))
+          (t/is (= 1 (count (filter #(re-matches #"chunk-.*/xt_docs/content-foo.bar\.arrow" %) objs)))))
+        ))
+    ))
+
+
 (t/deftest can-ingest-ts-devices-mini-into-multiple-nodes
   (let [node-dir (util/->path "target/can-ingest-ts-devices-mini-into-multiple-nodes")
         node-opts {:node-dir node-dir, :rows-per-chunk 1000, :rows-per-block 100}]
