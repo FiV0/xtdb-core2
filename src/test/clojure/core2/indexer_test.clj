@@ -464,13 +464,13 @@
                   [5100 5399 300] [5400 5699 300] [5700 5999 300]]
                  (row-id-ranges "chunk-2bb8/device-readings/content-battery-level.arrow")))))))
 
-(t/deftest can-ingest-attributes-with-slashes
-  (let [node-dir (util/->path "target/can-ingest-attributes-with-slashes")]
+
+(t/deftest can-ingest-namespaced-attributes
+  (let [node-dir (util/->path "target/can-ingest-namespaced-attributes")]
     (util/delete-dir node-dir)
 
     (with-open [node (tu/->local-node {:node-dir node-dir})]
       (let [^ObjectStore os (tu/component node ::os/file-system-object-store)
-            ^IMetadataManager mm (tu/component node ::meta/metadata-manager)
             tx (c2.d/submit-tx node [[:put {:id "foo" :foo/bar "bar"}]])]
         (t/is (= tx (tu/then-await-tx* tx node)))
         (tu/finish-chunk! node)
@@ -478,7 +478,7 @@
           (t/is (= 1 (count (filter #(re-matches #"^chunk-\p{XDigit}+/temporal\.arrow$" %) objs))))
           (t/is (= 1 (count (filter #(re-matches #"temporal-snapshots/\p{XDigit}+.*" %) objs))))
           (t/is (= 1 (count (filter #(re-matches #"chunk-\p{XDigit}+/xt_docs/metadata\.arrow" %) objs))))
-          (t/is (= 1 (count (filter #(re-matches #"chunk-.*/xt_docs/content-foo.bar\.arrow" %) objs)))))
+          (t/is (= 1 (count (filter #(re-matches #"chunk-.*/xt_docs/content-foo@bar\.arrow" %) objs)))))
         ))
     ))
 

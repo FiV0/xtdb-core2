@@ -173,6 +173,14 @@
 ;; TODO shuffle this ns around
 (declare merge-col-types)
 
+(defn- col-name->name [col-name]
+  (if (and (keyword col-name) (namespace col-name))
+    (str (namespace col-name) "@" (name col-name))
+    (name col-name)))
+
+(defn- name->symbol [name]
+  (apply symbol (str/split name #"@")))
+
 (extend-protocol ArrowWriteable
   List
   (value->col-type [v] [:list (apply merge-col-types (into #{} (map value->col-type) v))])
@@ -193,6 +201,7 @@
 
   Map
   (value->col-type [v]
+    ;; (throw (ex-info "from here" {}))
     (if (every? keyword? (keys v))
       [:struct (->> v
                     (into {} (map (juxt (comp symbol key)
@@ -207,7 +216,7 @@
         (instance? StructVector dest-vec)
         (let [writer (.asStruct writer)]
           (doseq [[k v] m
-                  :let [v-writer (.writerForName writer (name k))]]
+                  :let [v-writer (.writerForName writer (col-name->name k))]]
             (if (instance? IDenseUnionWriter v-writer)
               (doto (-> v-writer
                         (.asDenseUnion)
@@ -635,14 +644,19 @@
 
 ;;; struct
 
+(sc.api/letsc [6 -1]
+              (.getName (second child-fields))
+              (name->symbol (.getName (second child-fields))))
+
 (defmethod col-type->field* :struct [col-name nullable? [_ inner-col-types]]
   (apply ->field col-name ArrowType$Struct/INSTANCE nullable?
          (for [[col-name col-type] inner-col-types]
            (col-type->field col-name col-type))))
 
 (defmethod arrow-type->col-type ArrowType$Struct [_ & child-fields]
+  (sc.api/spy)
   [:struct (->> (for [^Field child-field child-fields]
-                  [(symbol (.getName child-field)) (field->col-type child-field)])
+                  [(name->symbol (.getName child-field)) (field->col-type child-field)])
                 (into {}))])
 
 ;;; union
@@ -799,7 +813,6 @@
   (let [^ArrowType$ExtensionType
         raw-type (or (ExtensionTypeRegistry/lookup (str (symbol xname)))
                      (throw (IllegalStateException. (format "can't find extension type: '%s'" (str (symbol xname))))))]
-
     (->field col-name
              (.deserialize raw-type (.getType (col-type->field underlying-type)) xdata)
              nullable?)))

@@ -150,10 +150,20 @@
 
       (when params
         (zmatch params
-          [:rows param-rows] (types/write-value! (encode-params allocator query param-rows) params-writer)
-          [:bytes param-bytes] (types/write-value! param-bytes params-writer)))
+                [:rows param-rows] (types/write-value! (encode-params allocator query param-rows) params-writer)
+                [:bytes param-bytes] (types/write-value! param-bytes params-writer)))
 
       (.endValue sql-writer))))
+
+(comment
+  (require 'sc.api)
+
+  (sc.api/letsc [37 -12]
+                (.writerForName put-writer "document")
+                ;; doc-writer
+                )
+
+  )
 
 (defn- ->put-writer [^IDenseUnionWriter tx-ops-writer]
   (let [put-writer (.asStruct (.writerForTypeId tx-ops-writer 1))
@@ -279,6 +289,7 @@
           default-tz-writer (vw/vec->writer (.getVector root "default-tz"))
           app-time-behaviour-writer (vw/vec->writer (.getVector root "application-time-as-of-now?"))]
 
+
       (when sys-time
         (doto ^TimeStampMicroTZVector (.getVector root "system-time")
           (.setSafe 0 (util/instant->micros sys-time))))
@@ -297,6 +308,19 @@
 
       (util/root->arrow-ipc-byte-buffer root :stream))))
 
+(comment
+  (sc.api/letsc [26 -11]
+                #_(let [record (serialize-tx-ops allocator tx-ops opts)]
+                    (with-open [tx-ops-ch (util/->seekable-byte-channel record)
+                                sr (ArrowStreamReader. tx-ops-ch allocator)
+                                tx-root (.getVectorSchemaRoot sr)]))
+                #_(serialize-tx-ops allocator tx-ops opts)
+                (.getSchema root)
+                (conform-tx-ops tx-ops)
+                )
+
+  )
+
 (deftype TxProducer [^BufferAllocator allocator, ^Log log, ^ZoneId default-tz]
   ITxProducer
   (submitTx [_ tx-ops opts]
@@ -304,9 +328,9 @@
                                           (util/maybe-update :sys-time util/->instant))]
       (-> (.appendRecord log (serialize-tx-ops allocator tx-ops opts))
           (util/then-apply
-            (fn [^LogRecord result]
-              (cond-> (.tx result)
-                sys-time (assoc :sys-time sys-time))))))))
+           (fn [^LogRecord result]
+             (cond-> (.tx result)
+               sys-time (assoc :sys-time sys-time))))))))
 
 (defmethod ig/prep-key ::tx-producer [_ opts]
   (merge {:log (ig/ref :core2/log)
