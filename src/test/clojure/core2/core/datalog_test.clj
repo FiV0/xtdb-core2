@@ -179,7 +179,7 @@
                               :in [film]
                               :where [[film :film/name film-name]
                                       [film :film/bond bond]
-                                      [bond :person--name bond-name]]}
+                                      [bond :person/name bond-name]]}
                             (assoc :basis {:tx tx}))
                         "skyfall")))
           "one -> one")
@@ -193,7 +193,7 @@
                               :in [bond]
                               :where [[film :film/name film-name]
                                       [film :film/bond bond]
-                                      [bond :person--name bond-name]]}
+                                      [bond :person/name bond-name]]}
                             (assoc :basis {:tx tx}))
                         "daniel-craig")))
           "one -> many")))
