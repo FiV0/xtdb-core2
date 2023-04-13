@@ -83,7 +83,7 @@
 
 (t/deftest can-build-chunk-as-arrow-ipc-file-format
   (let [node-dir (util/->path "target/can-build-chunk-as-arrow-ipc-file-format")
-        last-tx-key (xt.api/map->TransactionInstant {:tx-id 8205, :sys-time (util/->instant #inst "2020-01-02")})
+        last-tx-key (xt.api/map->TransactionInstant {:tx-id 8173, :sys-time (util/->instant #inst "2020-01-02")})
         total-number-of-ops (count (for [tx-ops txs
                                          op tx-ops]
                                      op))]
@@ -197,48 +197,48 @@
     (let [{tt :sys-time} (xt.d/submit-tx node [[:put :xt_docs {:xt/id :foo, :version 0}]]
                                          {:default-all-app-time? false})]
       (t/is (= [{:xt__id :foo, :version 0,
-                 :application_time_start (util/->zdt tt)
-                 :application_time_end (util/->zdt util/end-of-time)
+                 :xt__valid_from (util/->zdt tt)
+                 :xt__valid_to (util/->zdt util/end-of-time)
                  :system_time_start (util/->zdt tt)
                  :system_time_end (util/->zdt util/end-of-time)}]
                (tu/query-ra '[:scan {:table xt_docs}
                               [xt__id version
-                               application_time_start, application_time_end
+                               xt__valid_from, xt__valid_to
                                system_time_start, system_time_end]]
                             {:node node})))
 
       (let [{tt2 :sys-time} (xt.d/submit-tx node [[:put :xt_docs {:xt/id :foo, :version 1}]]
                                             {:default-all-app-time? false})]
         (t/is (= [{:xt__id :foo, :version 0,
-                   :application_time_start (util/->zdt tt)
-                   :application_time_end (util/->zdt util/end-of-time)
+                   :xt__valid_from (util/->zdt tt)
+                   :xt__valid_to (util/->zdt util/end-of-time)
                    :system_time_start (util/->zdt tt)
                    :system_time_end (util/->zdt tt2)}
                   {:xt__id :foo, :version 0,
-                   :application_time_start (util/->zdt tt)
-                   :application_time_end (util/->zdt tt2)
+                   :xt__valid_from (util/->zdt tt)
+                   :xt__valid_to (util/->zdt tt2)
                    :system_time_start (util/->zdt tt2)
                    :system_time_end (util/->zdt util/end-of-time)}
                   {:xt__id :foo, :version 1,
-                   :application_time_start (util/->zdt tt2)
-                   :application_time_end (util/->zdt util/end-of-time)
+                   :xt__valid_from (util/->zdt tt2)
+                   :xt__valid_to (util/->zdt util/end-of-time)
                    :system_time_start (util/->zdt tt2)
                    :system_time_end (util/->zdt util/end-of-time)}]
                  (tu/query-ra '[:scan {:table xt_docs, :for-sys-time :all-time}
                                 [xt__id version
-                                 application_time_start, application_time_end
+                                 xt__valid_from, xt__valid_to
                                  system_time_start, system_time_end]]
                               {:node node :default-all-app-time? true})))
 
         #_ ; FIXME #567 this sees the updated system_time_end of the first entry
         (t/is (= [{:xt/id :foo, :version 0,
-                   :application_time_start (util/->zdt tt)
-                   :application_time_end (util/->zdt util/end-of-time)
+                   :xt__valid_from (util/->zdt tt)
+                   :xt__valid_to (util/->zdt util/end-of-time)
                    :system_time_start (util/->zdt tt)
                    :system_time_end (util/->zdt util/end-of-time)}]
                  (tu/query-ra '[:scan {:table :xt_docs}
                                 [id version
-                                 application_time_start, application_time_end
+                                 xt__valid_from, xt__valid_to
                                  system_time_start, system_time_end]]
                               {:node node, :basis {:tx tx}}))
               "re-using the original snapshot should see the same result")))))
@@ -350,7 +350,7 @@
                             [:put :xt_docs {:xt/id "bar"}]])
 
       ;; aborted tx shows up in log
-      (xt.d/submit-tx node [[:sql "INSERT INTO foo (xt__id, application_time_start, application_time_end) VALUES (1, DATE '2020-01-01', DATE '2019-01-01')"]])
+      (xt.d/submit-tx node [[:sql "INSERT INTO foo (xt__id, xt__valid_from, xt__valid_to) VALUES (1, DATE '2020-01-01', DATE '2019-01-01')"]])
 
       (-> (xt.d/submit-tx node [[:delete :xt_docs "foo" {:for-app-time [:in #inst "2020-04-01"]}]
                                 [:put :xt_docs {:xt/id "bar", :month "april"},
@@ -364,7 +364,7 @@
 
 (t/deftest can-stop-node-without-writing-chunks
   (let [node-dir (util/->path "target/can-stop-node-without-writing-chunks")
-        last-tx-key (xt.api/map->TransactionInstant {:tx-id 8205, :sys-time (util/->instant #inst "2020-01-02")})]
+        last-tx-key (xt.api/map->TransactionInstant {:tx-id 8173, :sys-time (util/->instant #inst "2020-01-02")})]
     (util/delete-dir node-dir)
 
     (with-open [node (tu/->local-node {:node-dir node-dir})]

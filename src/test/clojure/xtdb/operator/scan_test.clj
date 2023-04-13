@@ -48,21 +48,21 @@
 
     (let [res (first (tu/query-ra '[:scan {:table xt_docs}
                                     [xt__id
-                                     application_time_start application_time_end
+                                     xt__valid_from xt__valid_to
                                      system_time_start system_time_end]]
                                   {:node node}))]
-      (t/is (= #{:xt__id :application_time_start :application_time_end :system_time_end :system_time_start}
+      (t/is (= #{:xt__id :xt__valid_from :xt__valid_to :system_time_end :system_time_start}
                (-> res keys set)))
 
-      (t/is (= {:xt__id :doc, :application_time_start (util/->zdt #inst "2021"), :application_time_end (util/->zdt #inst "3000")}
+      (t/is (= {:xt__id :doc, :xt__valid_from (util/->zdt #inst "2021"), :xt__valid_to (util/->zdt #inst "3000")}
                (dissoc res :system_time_start :system_time_end))))
 
     (t/is (= {:xt__id :doc, :app-time-start (util/->zdt #inst "2021"), :app-time-end (util/->zdt #inst "3000")}
              (-> (first (tu/query-ra '[:project [xt__id
-                                                 {app-time-start application_time_start}
-                                                 {app-time-end application_time_end}]
+                                                 {app-time-start xt__valid_from}
+                                                 {app-time-end xt__valid_to}]
                                        [:scan {:table xt_docs}
-                                        [xt__id application_time_start application_time_end]]]
+                                        [xt__id xt__valid_from xt__valid_to]]]
                                      {:node node}))
                  (dissoc :system_time_start :system_time_end))))))
 
@@ -70,12 +70,12 @@
   (with-open [node (node/start-node {})]
     (let [{tt :sys-time} (xt/submit-tx node [[:put :xt_docs {:xt/id :doc}]])]
 
-      (t/is (= [{:application_time_start (util/->zdt tt)
-                 :application_time_end (util/->zdt util/end-of-time)
+      (t/is (= [{:xt__valid_from (util/->zdt tt)
+                 :xt__valid_to (util/->zdt util/end-of-time)
                  :system_time_start (util/->zdt tt),
                  :system_time_end (util/->zdt util/end-of-time)}]
                (tu/query-ra '[:scan {:table xt_docs}
-                              [application_time_start application_time_end
+                              [xt__valid_from xt__valid_to
                                system_time_start system_time_end]]
                             {:node node}))))))
 
@@ -157,40 +157,40 @@
                 :app-time-end [(inc μs-2019) Long/MAX_VALUE]}
                (transpose (scan/->temporal-min-max-range
                            nil nil nil
-                           {"application_time_start" '(<= application_time_start #inst "2019")
-                            "application_time_end" '(> application_time_end #inst "2019")}))))
+                           {"xt__valid_from" '(<= xt__valid_from #inst "2019")
+                            "xt__valid_to" '(> xt__valid_to #inst "2019")}))))
 
       (t/is (= {:app-time-start [μs-2019 μs-2019]}
                (transpose (scan/->temporal-min-max-range
                            nil nil nil
-                           {"application_time_start" '(= application_time_start #inst "2019")}))))
+                           {"xt__valid_from" '(= xt__valid_from #inst "2019")}))))
 
       (t/testing "symbol column name"
         (t/is (= {:app-time-start [μs-2019 μs-2019]}
                  (transpose (scan/->temporal-min-max-range
                              nil nil nil
-                             {'application_time_start '(= application_time_start #inst "2019")})))))
+                             {'xt__valid_from '(= xt__valid_from #inst "2019")})))))
 
       (t/testing "conjunction"
         (t/is (= {:app-time-start [Long/MIN_VALUE μs-2019]}
                  (transpose (scan/->temporal-min-max-range
                              nil nil nil
-                             {"application_time_start" '(and (<= application_time_start #inst "2019")
-                                                             (<= application_time_start #inst "2020"))})))))
+                             {"xt__valid_from" '(and (<= xt__valid_from #inst "2019")
+                                                     (<= xt__valid_from #inst "2020"))})))))
 
       (t/testing "disjunction not supported"
         (t/is (= {}
                  (transpose (scan/->temporal-min-max-range
                              nil nil nil
-                             {"application_time_start" '(or (= application_time_start #inst "2019")
-                                                            (= application_time_start #inst "2020"))})))))
+                             {"xt__valid_from" '(or (= xt__valid_from #inst "2019")
+                                                    (= xt__valid_from #inst "2020"))})))))
 
       (t/testing "ignores non-ts literals"
         (t/is (= {:app-time-start [μs-2019 μs-2019]}
                  (transpose (scan/->temporal-min-max-range
                              nil nil nil
-                             {"application_time_start" '(and (= application_time_start #inst "2019")
-                                                             (= application_time_end nil))})))))
+                             {"xt__valid_from" '(and (= xt__valid_from #inst "2019")
+                                                     (= xt__valid_to nil))})))))
 
       (t/testing "parameters"
         (t/is (= {:app-time-start [μs-2018 Long/MAX_VALUE]
@@ -203,5 +203,5 @@
                                params nil nil
                                {"system_time_start" '(>= ?sys-time system_time_start)
                                 "system_time_end" '(< ?sys-time system_time_end)
-                                "application_time_start" '(<= ?app-time application_time_start)
-                                "application_time_end" '(> ?app-time application_time_end)})))))))))
+                                "xt__valid_from" '(<= ?app-time xt__valid_from)
+                                "xt__valid_to" '(> ?app-time xt__valid_to)})))))))))

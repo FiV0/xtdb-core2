@@ -384,8 +384,10 @@
     {scan-col (list* 'and col-preds)}))
 
 (def app-time-period-sym 'xt__app-time)
-(def app-time-start-sym 'application_time_start)
-(def app-time-end-sym 'application_time_end)
+(def app-time-start-sym-datalog 'xt__valid-from)
+(def app-time-start-sym 'xt__valid_from)
+(def app-time-end-sym-datalog 'xt__valid-to)
+(def app-time-end-sym 'xt__valid_to)
 (def app-temporal-cols {:period app-time-period-sym
                         :start app-time-start-sym
                         :end app-time-end-sym})
@@ -401,6 +403,14 @@
 (defn replace-period-cols-with-temporal-attrs
   [original-attrs]
   (cond-> original-attrs
+    (contains? original-attrs app-time-start-sym-datalog)
+    (-> (disj app-time-start-sym-datalog)
+        (conj app-time-start-sym))
+
+    (contains? original-attrs app-time-end-sym-datalog)
+    (-> (disj app-time-end-sym-datalog)
+        (conj app-time-end-sym))
+
     (contains? original-attrs app-time-period-sym)
     (-> (disj app-time-period-sym)
         (conj app-time-start-sym app-time-end-sym))
@@ -432,6 +442,8 @@
   (let [original-attrs (set (keys match))
 
         attrs (replace-period-cols-with-temporal-attrs original-attrs)
+
+        _ (clojure.pprint/pprint attrs)
 
         attr->lits (-> match
                        (->> (keep (fn [[a [v-type v-arg]]]
@@ -504,9 +516,9 @@
                                         (case v-type
                                           :logic-var {:lv v-arg
                                                       :col (if (contains?
-                                                                 #{app-time-period-sym
-                                                                   sys-time-period-sym}
-                                                                 a)
+                                                                #{app-time-period-sym
+                                                                  sys-time-period-sym}
+                                                                a)
                                                              (col-sym v-arg)
                                                              a)}
                                           :unwind {:lv (first v-arg), :col (attr->unwind-col a)}
@@ -1182,9 +1194,9 @@
         {::keys [in-bindings]} (meta plan)
 
         plan (-> plan
-                 #_(doto clojure.pprint/pprint)
+                 (doto clojure.pprint/pprint)
                  #_(->> (binding [*print-meta* true]))
-                 (lp/rewrite-plan {})
+                 #_(lp/rewrite-plan {})
                  #_(doto clojure.pprint/pprint)
                  (doto (lp/validate-plan)))]
 

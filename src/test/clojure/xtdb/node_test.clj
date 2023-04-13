@@ -31,16 +31,16 @@
           (q [table]
             (->> (xt.sql/q tu/*node* (format "
 SELECT p.xt__id, p.text,
-       p.application_time_start, p.application_time_end,
+       p.xt__valid_from, p.xt__valid_to,
        p.system_time_start, p.system_time_end
 FROM %s FOR ALL SYSTEM_TIME AS p"
                                              table))
-                 (into {} (map (juxt (juxt :application_time_start :application_time_end
+                 (into {} (map (juxt (juxt :xt__valid_from :xt__valid_to
                                            :system_time_start :system_time_end)
                                      :text)))))]
 
     (xt.sql/submit-tx tu/*node* [[:sql "
-INSERT INTO posts (xt__id, text, application_time_start)
+INSERT INTO posts (xt__id, text, xt__valid_from)
 VALUES (1, 'Happy 2024!', DATE '2024-01-01'),
        (1, 'Happy 2025!', DATE '2025-01-01'),
        (1, 'Happy 2026!', DATE '2026-01-01')"]])
@@ -48,9 +48,9 @@ VALUES (1, 'Happy 2024!', DATE '2024-01-01'),
     (t/is (= (expected (util/->zdt #inst "2020-01-01"))
              (q "posts")))
 
-    (xt.sql/submit-tx tu/*node* [[:sql "INSERT INTO posts2 (xt__id, text, application_time_start) VALUES (1, 'Happy 2024!', DATE '2024-01-01')"]
-                                 [:sql "INSERT INTO posts2 (xt__id, text, application_time_start) VALUES (1, 'Happy 2025!', DATE '2025-01-01')"]
-                                 [:sql "INSERT INTO posts2 (xt__id, text, application_time_start) VALUES (1, 'Happy 2026!', DATE '2026-01-01')"]])
+    (xt.sql/submit-tx tu/*node* [[:sql "INSERT INTO posts2 (xt__id, text, xt__valid_from) VALUES (1, 'Happy 2024!', DATE '2024-01-01')"]
+                                 [:sql "INSERT INTO posts2 (xt__id, text, xt__valid_from) VALUES (1, 'Happy 2025!', DATE '2025-01-01')"]
+                                 [:sql "INSERT INTO posts2 (xt__id, text, xt__valid_from) VALUES (1, 'Happy 2026!', DATE '2026-01-01')"]])
 
     (t/is (= (expected (util/->zdt #inst "2020-01-02"))
              (q "posts2")))))
@@ -64,20 +64,20 @@ VALUES (1, 'Happy 2024!', DATE '2024-01-01'),
 
 (t/deftest test-delete-without-search-315
   (letfn [(q []
-            (xt.sql/q tu/*node* "SELECT foo.xt__id, foo.application_time_start, foo.application_time_end FROM foo"))]
+            (xt.sql/q tu/*node* "SELECT foo.xt__id, foo.xt__valid_from, foo.xt__valid_to FROM foo"))]
     (xt.sql/submit-tx tu/*node* [[:sql "INSERT INTO foo (xt__id) VALUES ('foo')"]])
 
     (t/is (= [{:xt__id "foo",
-               :application_time_start (util/->zdt #inst "2020")
-               :application_time_end (util/->zdt util/end-of-time)}]
+               :xt__valid_from (util/->zdt #inst "2020")
+               :xt__valid_to (util/->zdt util/end-of-time)}]
              (q)))
 
     (xt.sql/submit-tx tu/*node* [[:sql "DELETE FROM foo"]]
                       {:default-all-app-time? false})
 
     (t/is (= [{:xt__id "foo"
-               :application_time_start (util/->zdt #inst "2020")
-               :application_time_end (util/->zdt #inst "2020-01-02")}]
+               :xt__valid_from (util/->zdt #inst "2020")
+               :xt__valid_to (util/->zdt #inst "2020-01-02")}]
              (q)))
 
     (xt.sql/submit-tx tu/*node* [[:sql "DELETE FROM foo"]])
@@ -93,8 +93,8 @@ VALUES (1, 'Happy 2024!', DATE '2024-01-01'),
 
   (t/is (= #{["Susan" "Smith", (util/->zdt #inst "2020") (util/->zdt #inst "2021")]
              ["sue" "Smith", (util/->zdt #inst "2021") (util/->zdt util/end-of-time)]}
-           (->> (xt.sql/q tu/*node* "SELECT u.first_name, u.last_name, u.application_time_start, u.application_time_end FROM users u")
-                (into #{} (map (juxt :first_name :last_name :application_time_start :application_time_end)))))))
+           (->> (xt.sql/q tu/*node* "SELECT u.first_name, u.last_name, u.xt__valid_from, u.xt__valid_to FROM users u")
+                (into #{} (map (juxt :first_name :last_name :xt__valid_from :xt__valid_to)))))))
 
 (t/deftest test-can-submit-same-id-into-multiple-tables-338
   (let [tx1 (xt.sql/submit-tx tu/*node* [[:sql "INSERT INTO t1 (xt__id, foo) VALUES ('thing', 't1-foo')"]
@@ -122,7 +122,7 @@ VALUES (1, 'Happy 2024!', DATE '2024-01-01'),
             (->> (for [[tk tn] {:xt "xt_docs"
                                 :t1 "explicit_table1"
                                 :t2 "explicit_table2"}]
-                   [tk (->> (xt.sql/q tu/*node* (format "SELECT t.xt__id, t.v FROM %s t WHERE t.application_time_end = END_OF_TIME" tn))
+                   [tk (->> (xt.sql/q tu/*node* (format "SELECT t.xt__id, t.v FROM %s t WHERE t.xt__valid_to = END_OF_TIME" tn))
                             (into #{} (map :v)))])
                  (into {})))]
 
@@ -156,27 +156,27 @@ VALUES (1, 'Happy 2024!', DATE '2024-01-01'),
 
 (t/deftest test-overrides-range
   (xt.sql/submit-tx tu/*node* [[:sql "
-INSERT INTO foo (xt__id, v, application_time_start, application_time_end)
+INSERT INTO foo (xt__id, v, xt__valid_from, xt__valid_to)
 VALUES (1, 1, DATE '1998-01-01', DATE '2000-01-01')"]])
 
   (xt.sql/submit-tx tu/*node* [[:sql "
-INSERT INTO foo (xt__id, v, application_time_start, application_time_end)
+INSERT INTO foo (xt__id, v, xt__valid_from, xt__valid_to)
 VALUES (1, 2, DATE '1997-01-01', DATE '2001-01-01')"]])
 
   (t/is (= [{:xt__id 1, :v 1,
-             :application_time_start (util/->zdt #inst "1998")
-             :application_time_end (util/->zdt #inst "2000")
+             :xt__valid_from (util/->zdt #inst "1998")
+             :xt__valid_to (util/->zdt #inst "2000")
              :system_time_start (util/->zdt #inst "2020-01-01")
              :system_time_end (util/->zdt #inst "2020-01-02")}
             {:xt__id 1, :v 2,
-             :application_time_start (util/->zdt #inst "1997")
-             :application_time_end (util/->zdt #inst "2001")
+             :xt__valid_from (util/->zdt #inst "1997")
+             :xt__valid_to (util/->zdt #inst "2001")
              :system_time_start (util/->zdt #inst "2020-01-02")
              :system_time_end (util/->zdt util/end-of-time)}]
 
            (xt.sql/q tu/*node* "
 SELECT foo.xt__id, foo.v,
-       foo.application_time_start, foo.application_time_end,
+       foo.xt__valid_from, foo.xt__valid_to,
        foo.system_time_start, foo.system_time_end
 FROM foo FOR ALL SYSTEM_TIME FOR ALL APPLICATION_TIME"))))
 
@@ -186,19 +186,19 @@ INSERT INTO foo (xt__id, v)
 VALUES (1, 1)"]])
 
   (t/is (= [{:xt__id 1, :v 1,
-             :application_time_start (util/->zdt #inst "2020")
-             :application_time_end (util/->zdt util/end-of-time)}]
-           (xt.sql/q tu/*node* "SELECT foo.xt__id, foo.v, foo.application_time_start, foo.application_time_end FROM foo")))
+             :xt__valid_from (util/->zdt #inst "2020")
+             :xt__valid_to (util/->zdt util/end-of-time)}]
+           (xt.sql/q tu/*node* "SELECT foo.xt__id, foo.v, foo.xt__valid_from, foo.xt__valid_to FROM foo")))
 
   (t/is (= []
            (xt.sql/q tu/*node* "
-SELECT foo.xt__id, foo.v, foo.application_time_start, foo.application_time_end
+SELECT foo.xt__id, foo.v, foo.xt__valid_from, foo.xt__valid_to
 FROM foo FOR APPLICATION_TIME AS OF DATE '1999-01-01'"
                      {:basis {:current-time (util/->instant #inst "1999")}})))
 
   (t/is (= []
            (xt.sql/q tu/*node* "
-SELECT foo.xt__id, foo.v, foo.application_time_start, foo.application_time_end
+SELECT foo.xt__id, foo.v, foo.xt__valid_from, foo.xt__valid_to
 FROM foo FOR APPLICATION_TIME AS OF CURRENT_TIMESTAMP"
                      {:basis {:current-time (util/->instant #inst "1999")}}))))
 
@@ -218,23 +218,23 @@ WHERE foo.xt__id = 1"]])]
 
     (letfn [(q1 [opts]
               (xt.sql/q tu/*node* "
-SELECT foo.xt__id, foo.v, foo.application_time_start, foo.application_time_end
+SELECT foo.xt__id, foo.v, foo.xt__valid_from, foo.xt__valid_to
 FROM foo
-ORDER BY foo.application_time_start"
+ORDER BY foo.xt__valid_from"
                         opts))
             (q2 [opts]
               (frequencies
                (xt.sql/q tu/*node* "SELECT foo.xt__id, foo.v FROM foo" opts)))]
 
       (t/is (= [{:xt__id 1, :v 1
-                 :application_time_start (util/->zdt #inst "2020")
-                 :application_time_end (util/->zdt #inst "2022")}
+                 :xt__valid_from (util/->zdt #inst "2020")
+                 :xt__valid_to (util/->zdt #inst "2022")}
                 {:xt__id 1, :v 2
-                 :application_time_start (util/->zdt #inst "2022")
-                 :application_time_end (util/->zdt #inst "2024")}
+                 :xt__valid_from (util/->zdt #inst "2022")
+                 :xt__valid_to (util/->zdt #inst "2024")}
                 {:xt__id 1, :v 1
-                 :application_time_start (util/->zdt #inst "2024")
-                 :application_time_end (util/->zdt util/end-of-time)}]
+                 :xt__valid_from (util/->zdt #inst "2024")
+                 :xt__valid_to (util/->zdt util/end-of-time)}]
 
                (q1 {:basis {:tx tx1}})))
 
@@ -242,20 +242,20 @@ ORDER BY foo.application_time_start"
                (q2 {:basis {:tx tx1}})))
 
       (t/is (= [{:xt__id 1, :v 1
-                 :application_time_start (util/->zdt #inst "2020")
-                 :application_time_end (util/->zdt #inst "2022")}
+                 :xt__valid_from (util/->zdt #inst "2020")
+                 :xt__valid_to (util/->zdt #inst "2022")}
                 {:xt__id 1, :v 2
-                 :application_time_start (util/->zdt #inst "2022")
-                 :application_time_end (util/->zdt #inst "2023")}
+                 :xt__valid_from (util/->zdt #inst "2022")
+                 :xt__valid_to (util/->zdt #inst "2023")}
                 {:xt__id 1, :v 1
-                 :application_time_start (util/->zdt #inst "2025")
-                 :application_time_end (util/->zdt util/end-of-time)}]
+                 :xt__valid_from (util/->zdt #inst "2025")
+                 :xt__valid_to (util/->zdt util/end-of-time)}]
 
                (q1 {:basis {:tx tx2}})))
 
       (t/is (= [{:xt__id 1, :v 1
-                 :application_time_start (util/->zdt #inst "2025")
-                 :application_time_end (util/->zdt util/end-of-time)}]
+                 :xt__valid_from (util/->zdt #inst "2025")
+                 :xt__valid_to (util/->zdt util/end-of-time)}]
 
                (q1 {:basis {:tx tx2, :current-time (util/->instant #inst "2026")}
                     :default-all-app-time? false})))
@@ -264,7 +264,7 @@ ORDER BY foo.application_time_start"
                (q2 {:basis {:tx tx2}}))))))
 
 (t/deftest test-error-handling-inserting-strings-into-app-time-cols-397
-  (xt.sql/submit-tx tu/*node* [[:sql "INSERT INTO foo (xt__id, application_time_start) VALUES (1, '2018-01-01')"]])
+  (xt.sql/submit-tx tu/*node* [[:sql "INSERT INTO foo (xt__id, xt__valid_from) VALUES (1, '2018-01-01')"]])
 
   ;; TODO check the rollback error when it's available, #401
   (t/is (= [] (xt.sql/q tu/*node* "SELECT foo.xt__id FROM foo"))))

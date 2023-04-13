@@ -66,8 +66,8 @@
                                               ^DenseUnionVector tx-ops-vec, ^Instant current-time]
   (let [put-vec (.getStruct tx-ops-vec 1)
         ^DenseUnionVector doc-duv (.getChild put-vec "document" DenseUnionVector)
-        ^TimeStampVector app-time-start-vec (.getChild put-vec "application_time_start")
-        ^TimeStampVector app-time-end-vec (.getChild put-vec "application_time_end")
+        ^TimeStampVector app-time-start-vec (.getChild put-vec "xt__valid_from")
+        ^TimeStampVector app-time-end-vec (.getChild put-vec "xt__valid_to")
         current-time-µs (util/instant->micros current-time)
         tables (mapv (fn [^StructVector table-vec]
                        (let [table-name (.getName table-vec)
@@ -113,8 +113,8 @@
   (let [delete-vec (.getStruct tx-ops-vec 2)
         ^VarCharVector table-vec (.getChild delete-vec "table" VarCharVector)
         ^DenseUnionVector id-vec (.getChild delete-vec "xt__id" DenseUnionVector)
-        ^TimeStampVector app-time-start-vec (.getChild delete-vec "application_time_start")
-        ^TimeStampVector app-time-end-vec (.getChild delete-vec "application_time_end")
+        ^TimeStampVector app-time-start-vec (.getChild delete-vec "xt__valid_from")
+        ^TimeStampVector app-time-end-vec (.getChild delete-vec "xt__valid_to")
         current-time-µs (util/instant->micros current-time)]
     (reify OpIndexer
       (indexOp [_ tx-op-idx]
@@ -281,9 +281,9 @@
                                              (.rowCount in-rel))
               table-copier (.rowCopier (.writer live-table) content-rel)
               id-col (.vectorForName in-rel "xt__id")
-              app-time-start-rdr (some-> (.vectorForName in-rel "application_time_start")
+              app-time-start-rdr (some-> (.vectorForName in-rel "xt__valid_from")
                                          (.monoReader t/temporal-col-type))
-              app-time-end-rdr (some-> (.vectorForName in-rel "application_time_end")
+              app-time-end-rdr (some-> (.vectorForName in-rel "xt__valid_to")
                                        (.monoReader t/temporal-col-type))]
           (dotimes [idx row-count]
             (let [row-id (.nextRowId live-chunk)]
@@ -325,8 +325,8 @@
         (.getAsInt))))
 
 (defn- ->sql-update-indexer ^xtdb.indexer.SqlOpIndexer [^IMetadataManager metadata-mgr, ^IBufferPool buffer-pool
-                                                         ^ILogOpIndexer log-op-idxer, ^ITemporalTxIndexer temporal-idxer
-                                                         ^ILiveChunkTx live-chunk]
+                                                        ^ILogOpIndexer log-op-idxer, ^ITemporalTxIndexer temporal-idxer
+                                                        ^ILiveChunkTx live-chunk]
   (reify SqlOpIndexer
     (indexOp [_ in-rel {:keys [table]}]
       (let [row-count (.rowCount in-rel)
@@ -343,8 +343,8 @@
                                         (into {}))
                 iid-rdr (.monoReader (.vectorForName in-rel "_iid") :i64)
                 row-id-rdr (.monoReader (.vectorForName in-rel "_row-id") :i64)
-                app-time-start-rdr (.monoReader (.vectorForName in-rel "application_time_start") t/temporal-col-type)
-                app-time-end-rdr (.monoReader (.vectorForName in-rel "application_time_end") t/temporal-col-type)]
+                app-time-start-rdr (.monoReader (.vectorForName in-rel "xt__valid_from") t/temporal-col-type)
+                app-time-end-rdr (.monoReader (.vectorForName in-rel "xt__valid_to") t/temporal-col-type)]
 
             ;; once the SQL planner has select-star we can likely re-use a lot of that instead of the below...
             (dotimes [idx row-count]
@@ -392,8 +392,8 @@
     (indexOp [_ in-rel _query-opts]
       (let [row-count (.rowCount in-rel)
             iid-rdr (.monoReader (.vectorForName in-rel "_iid") :i64)
-            app-time-start-rdr (.monoReader (.vectorForName in-rel "application_time_start") t/temporal-col-type)
-            app-time-end-rdr (.monoReader (.vectorForName in-rel "application_time_end") t/temporal-col-type)]
+            app-time-start-rdr (.monoReader (.vectorForName in-rel "xt__valid_from") t/temporal-col-type)
+            app-time-end-rdr (.monoReader (.vectorForName in-rel "xt__valid_to") t/temporal-col-type)]
         (dotimes [idx row-count]
           (let [row-id (.nextRowId live-chunk)
                 iid (.readLong iid-rdr idx)

@@ -6,8 +6,8 @@
    x1 system_time_start,
    x2 system_time_end,
    x8 bar,
-   x9 application_time_start,
-   x10 application_time_end}
+   x9 xt__valid_from,
+   x10 xt__valid_to}
   [:project
    [x5
     x6
@@ -19,15 +19,15 @@
    [:rename
     {system_time_start x1,
      system_time_end x2,
-     application_time_start x3,
-     application_time_end x4,
+     xt__valid_from x3,
+     xt__valid_to x4,
      _iid x5,
      _row-id x6}
     [:scan
      {:table foo}
      (system_time_start
       system_time_end
-      application_time_start
-      application_time_end
+      xt__valid_from
+      xt__valid_to
       _iid
       _row-id)]]]]]

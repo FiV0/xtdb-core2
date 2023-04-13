@@ -4,8 +4,8 @@
   {x6 xt__id,
    x7 customer_number,
    x8 property_number,
-   x10 application_time_start,
-   x11 application_time_end}
+   x10 xt__valid_from,
+   x11 xt__valid_to}
   [:project
    [x6 x7 x8 {x10 (cast-tstz x9)} {x11 (cast-tstz x4)}]
    [:project

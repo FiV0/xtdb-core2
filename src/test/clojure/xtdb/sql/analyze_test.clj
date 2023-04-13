@@ -425,7 +425,7 @@ SELECT t1.d-t1.e AS a, SUM(t1.a) AS b
   (valid?
     "SELECT f.APP_TIME OVERLAPS f.SYSTEM_TIME
     FROM foo
-    AS f (system_time_start, system_time_end, application_time_start, application_time_end)")
+    AS f (system_time_start, system_time_end, xt__valid_from, xt__valid_to)")
 
   (invalid? [#"References to periods may only appear within period predicates: foo.application_time"]
     "SELECT foo.APPLICATION_TIME
@@ -452,7 +452,7 @@ SELECT t1.d-t1.e AS a, SUM(t1.a) AS b
      #"Columns are not valid within period specifications: foo.biz"
      #"Table not in scope: foo"
      #"Table not in scope: foo"]
-    "SELECT foo.application_time_start
+    "SELECT foo.xt__valid_from
     FROM foo FOR SYSTEM_TIME FROM foo.baz TO foo.biz")
 
   (invalid?
@@ -729,7 +729,7 @@ SELECT t1.d-t1.e AS a, SUM(t1.a) AS b
             "INSERT INTO users (xt__id, name) VALUES (?, ?, ?)")
 
   (invalid? [#"INSERT does not contain mandatory xt__id column"]
-            "INSERT INTO users (name, application_time_start) VALUES (?, ?)")
+            "INSERT INTO users (name, xt__valid_from) VALUES (?, ?)")
   (invalid? [#"Non-deterministic ARROW_TABLE is not allowed in DML statements"]
 
             "INSERT INTO users (xt__id, name) SELECT x.xt__id, x.name FROM ARROW_TABLE('test.arrow') AS x")
@@ -759,7 +759,7 @@ SELECT t1.d-t1.e AS a, SUM(t1.a) AS b
 
 (t/deftest test-set-temporal-cols-err-454
   (invalid? [#"Updating app-time columns outside of `FOR PERIOD OF` is not supported:"]
-            "UPDATE foo SET application_time_start = DATE '2020-01-01'")
+            "UPDATE foo SET xt__valid_from = DATE '2020-01-01'")
 
   (invalid? [#"Updating sys-time columns is not supported:"]
             "UPDATE foo SET system_time_start = DATE '2020-01-01'"))

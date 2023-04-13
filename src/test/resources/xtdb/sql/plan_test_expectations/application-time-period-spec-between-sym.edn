@@ -3,28 +3,28 @@
  [:project
   [{x4 4}]
   [:rename
-   {application_time_start x1, application_time_end x2}
+   {xt__valid_from x1, xt__valid_to x2}
    [:select
     (if
-     (>
-      #time/zoned-date-time "3001-01-01T00:00Z"
-      #time/date "3000-01-01")
-     (and
-      (<=
-       #time/date "3000-01-01"
-       #time/zoned-date-time "3001-01-01T00:00Z")
-      (<=
-       application_time_start
-       #time/zoned-date-time "3001-01-01T00:00Z")
-      (> application_time_end #time/date "3000-01-01"))
-     (and
-      (<=
-       #time/zoned-date-time "3001-01-01T00:00Z"
-       #time/date "3000-01-01")
-      (<= application_time_start #time/date "3000-01-01")
-      (>
-       application_time_end
-       #time/zoned-date-time "3001-01-01T00:00Z")))
+        (>
+         #time/zoned-date-time "3001-01-01T00:00Z"
+         #time/date "3000-01-01")
+      (and
+       (<=
+        #time/date "3000-01-01"
+        #time/zoned-date-time "3001-01-01T00:00Z")
+       (<=
+        xt__valid_from
+        #time/zoned-date-time "3001-01-01T00:00Z")
+       (> xt__valid_to #time/date "3000-01-01"))
+      (and
+       (<=
+        #time/zoned-date-time "3001-01-01T00:00Z"
+        #time/date "3000-01-01")
+       (<= xt__valid_from #time/date "3000-01-01")
+       (>
+        xt__valid_to
+        #time/zoned-date-time "3001-01-01T00:00Z")))
     [:scan
      {:table t1}
-     [application_time_start application_time_end]]]]]]
+     [xt__valid_from xt__valid_to]]]]]]

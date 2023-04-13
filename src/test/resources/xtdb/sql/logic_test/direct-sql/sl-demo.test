@@ -3,7 +3,7 @@ hash-threshold 100
 variable SET APP_TIME_DEFAULTS TO AS_OF_NOW
 
 statement ok
-INSERT INTO Prop_Owner (xt__id, customer_number, property_number, application_time_start)
+INSERT INTO Prop_Owner (xt__id, customer_number, property_number, xt__valid_from)
 VALUES (1, 145, 7797, DATE '1998-01-10')
 
 query IIITTTT nosort
@@ -11,8 +11,8 @@ SELECT *
   FROM Prop_Owner AS x (xt__id,
                         customer_number,
                         property_number,
-                        application_time_start,
-                        application_time_end,
+                        xt__valid_from,
+                        xt__valid_to,
                         system_time_start,
                         system_time_end)
 ----
@@ -25,7 +25,7 @@ SELECT *
 9999-12-31T23:59:59.999999Z[UTC]
 
 statement ok
-INSERT INTO Prop_Owner (xt__id, customer_number, property_number, application_time_start)
+INSERT INTO Prop_Owner (xt__id, customer_number, property_number, xt__valid_from)
 VALUES (1, 827, 7797, DATE '1998-01-15')
 
 query IIITTTT nosort
@@ -33,8 +33,8 @@ SELECT *
   FROM Prop_Owner AS x (xt__id,
                         customer_number,
                         property_number,
-                        application_time_start,
-                        application_time_end,
+                        xt__valid_from,
+                        xt__valid_to,
                         system_time_start,
                         system_time_end)
 ----
@@ -54,8 +54,8 @@ SELECT *
          AS x (xt__id,
                customer_number,
                property_number,
-               application_time_start,
-               application_time_end,
+               xt__valid_from,
+               xt__valid_to,
                system_time_start,
                system_time_end)
 ----
@@ -93,8 +93,8 @@ SELECT *
          AS x (xt__id,
                customer_number,
                property_number,
-               application_time_start,
-               application_time_end,
+               xt__valid_from,
+               xt__valid_to,
                system_time_start,
                system_time_end)
 ----
@@ -107,8 +107,8 @@ SELECT *
          AS x (xt__id,
                customer_number,
                property_number,
-               application_time_start,
-               application_time_end,
+               xt__valid_from,
+               xt__valid_to,
                system_time_start,
                system_time_end)
 ----
@@ -142,7 +142,7 @@ SELECT *
 9999-12-31T23:59:59.999999Z[UTC]
 
 statement ok
-INSERT INTO Prop_Owner (xt__id, customer_number, property_number, application_time_start, application_time_end)
+INSERT INTO Prop_Owner (xt__id, customer_number, property_number, xt__valid_from, xt__valid_to)
 VALUES (1, 145, 7797, DATE '1998-01-03', DATE '1998-01-10')
 
 query IIITTTT nosort
@@ -153,8 +153,8 @@ SELECT *
          AS x (xt__id,
                customer_number,
                property_number,
-               application_time_start,
-               application_time_end,
+               xt__valid_from,
+               xt__valid_to,
                system_time_start,
                system_time_end)
 ----
@@ -208,8 +208,8 @@ SELECT *
          AS x (xt__id,
                customer_number,
                property_number,
-               application_time_start,
-               application_time_end,
+               xt__valid_from,
+               xt__valid_to,
                system_time_start,
                system_time_end)
 ----
@@ -260,8 +260,8 @@ statement ok
 INSERT INTO Prop_Owner (xt__id,
                         customer_number,
                         property_number,
-                        application_time_start,
-                        application_time_end)
+                        xt__valid_from,
+                        xt__valid_to)
 VALUES (1, 145, 7797, DATE '1998-01-05', DATE '1998-01-12'),
        (1, 827, 7797, DATE '1998-01-12', DATE '1998-01-20')
 
@@ -273,8 +273,8 @@ SELECT *
          AS x (xt__id,
                customer_number,
                property_number,
-               application_time_start,
-               application_time_end,
+               xt__valid_from,
+               xt__valid_to,
                system_time_start,
                system_time_end)
 ----
@@ -356,11 +356,11 @@ SELECT *
          AS x (xt__id,
                customer_number,
                property_number,
-               application_time_start,
-               application_time_end,
+               xt__valid_from,
+               xt__valid_to,
                system_time_start,
                system_time_end)
- WHERE (x.application_time_end - x.application_time_start) = (DATE '1970-01-08' - DATE '1970-01-01')
+ WHERE (x.xt__valid_to - x.xt__valid_from) = (DATE '1970-01-08' - DATE '1970-01-01')
 ----
 1
 145
@@ -374,7 +374,7 @@ statement ok
 DELETE
 FROM Prop_Owner
 FOR ALL APPLICATION_TIME AS x
-WHERE (x.application_time_end - x.application_time_start) = (DATE '1970-01-08' - DATE '1970-01-01')
+WHERE (x.xt__valid_to - x.xt__valid_from) = (DATE '1970-01-08' - DATE '1970-01-01')
 
 query IIITTTT nosort
 SELECT *
@@ -384,8 +384,8 @@ SELECT *
          AS x (xt__id,
                customer_number,
                property_number,
-               application_time_start,
-               application_time_end,
+               xt__valid_from,
+               xt__valid_to,
                system_time_start,
                system_time_end)
 ----
@@ -479,7 +479,7 @@ SELECT *
   FROM Prop_Owner
          FOR SYSTEM_TIME AS OF TIMESTAMP '2019-01-01T00:00:00Z'
          FOR ALL APPLICATION_TIME
-         AS x (customer_number, application_time_start, application_time_end)
+         AS x (customer_number, xt__valid_from, xt__valid_to)
 ----
 
 query ITT nosort
@@ -487,7 +487,7 @@ SELECT *
   FROM Prop_Owner
          FOR SYSTEM_TIME AS OF TIMESTAMP '2020-01-01T12:00:00Z'
          FOR ALL APPLICATION_TIME
-         AS x (customer_number, application_time_start, application_time_end)
+         AS x (customer_number, xt__valid_from, xt__valid_to)
 ----
 145
 1998-01-10T00:00Z[UTC]
@@ -498,7 +498,7 @@ SELECT *
   FROM Prop_Owner
          FOR SYSTEM_TIME AS OF TIMESTAMP '2020-01-02T12:00:00Z'
          FOR ALL APPLICATION_TIME
-         AS x (customer_number, application_time_start, application_time_end)
+         AS x (customer_number, xt__valid_from, xt__valid_to)
 ----
 145
 1998-01-10T00:00Z[UTC]
@@ -513,7 +513,7 @@ SELECT *
   FROM Prop_Owner
          FOR SYSTEM_TIME AS OF TIMESTAMP '2020-01-05T12:00:00Z'
          FOR ALL APPLICATION_TIME
-         AS x (customer_number, application_time_start, application_time_end)
+         AS x (customer_number, xt__valid_from, xt__valid_to)
 ----
 145
 1998-01-10T00:00Z[UTC]
@@ -530,7 +530,7 @@ query ITT nosort
 SELECT *
   FROM Prop_Owner
          FOR ALL APPLICATION_TIME
-         AS x (customer_number, application_time_start, application_time_end)
+         AS x (customer_number, xt__valid_from, xt__valid_to)
 ----
 827
 1998-01-12T00:00Z[UTC]
@@ -579,7 +579,7 @@ SELECT *
 9999-12-31T23:59:59.999999Z[UTC]
 
 statement ok
-INSERT INTO Prop_Owner (xt__id, customer_number, property_number, application_time_start)
+INSERT INTO Prop_Owner (xt__id, customer_number, property_number, xt__valid_from)
 VALUES (2, 827, 3621, DATE '1998-01-15')
 ----
 
@@ -591,8 +591,8 @@ SELECT *
          AS x (xt__id,
                customer_number,
                property_number,
-               application_time_start,
-               application_time_end,
+               xt__valid_from,
+               xt__valid_to,
                system_time_start,
                system_time_end)
 ----
@@ -685,8 +685,8 @@ WHERE P1.property_number = 7797
 
 query ITT nosort
 SELECT P2.property_number,
-       GREATEST(P1.application_time_start, P2.application_time_start) AS VT_Begin,
-       LEAST(P1.application_time_end, P2.application_time_end) AS VT_End
+       GREATEST(P1.xt__valid_from, P2.xt__valid_from) AS VT_Begin,
+       LEAST(P1.xt__valid_to, P2.xt__valid_to) AS VT_End
 FROM Prop_Owner
 FOR ALL APPLICATION_TIME AS P1,
         Prop_Owner
@@ -723,8 +723,8 @@ WHERE P1.property_number = 7797
 
 query ITTTT nosort
 SELECT P2.property_number,
-       GREATEST(P1.application_time_start, P2.application_time_start) AS VT_Begin,
-       LEAST(P1.application_time_end, P2.application_time_end) AS VT_End,
+       GREATEST(P1.xt__valid_from, P2.xt__valid_from) AS VT_Begin,
+       LEAST(P1.xt__valid_to, P2.xt__valid_to) AS VT_End,
        GREATEST(P1.system_time_start, P2.system_time_start) AS Recorded_Start,
        LEAST(P1.system_time_end, P2.system_time_end) AS Recorded_Stop
 FROM Prop_Owner FOR ALL SYSTEM_TIME FOR ALL APPLICATION_TIME AS P1,
@@ -775,8 +775,8 @@ WHERE P1.property_number = 7797
 
 query ITTT nosort
 SELECT P2.property_number,
-       GREATEST(P1.application_time_start, P2.application_time_start) AS VT_Begin,
-       LEAST(P1.application_time_end, P2.application_time_end) AS VT_End,
+       GREATEST(P1.xt__valid_from, P2.xt__valid_from) AS VT_Begin,
+       LEAST(P1.xt__valid_to, P2.xt__valid_to) AS VT_End,
        P2.system_time_start AS Recorded_Start
 FROM Prop_Owner FOR ALL SYSTEM_TIME FOR ALL APPLICATION_TIME AS P1,
      Prop_Owner FOR ALL SYSTEM_TIME FOR ALL APPLICATION_TIME AS P2

@@ -509,8 +509,8 @@
     [(update col-ref :identifiers #(vector (first %) "system_time_start"))
      (update col-ref :identifiers #(vector (first %) "system_time_end"))]
     :application-time-period-reference
-    [(update col-ref :identifiers #(vector (first %) "application_time_start"))
-     (update col-ref :identifiers #(vector (first %) "application_time_end"))]
+    [(update col-ref :identifiers #(vector (first %) "xt__valid_from"))
+     (update col-ref :identifiers #(vector (first %) "xt__valid_to"))]
     [col-ref]))
 
 (declare column-reference)
@@ -530,213 +530,213 @@
    but there are multiple candidates in set operators."
   [ag]
   (r/zcase ag
-    :table_primary
-    (when-not (r/ctor? :qualified_join (r/$ ag 1))
-      (let [{:keys [correlation-name derived-columns], table-id :id, :as table} (table ag)
-            projections (if-let [derived-columns (not-empty derived-columns)]
-                          (for [identifier derived-columns]
-                            {:identifier identifier})
-                          (if-let [subquery-ref (:subquery-ref (meta table))]
-                            (first (projected-columns subquery-ref))
-                            (let [query-specification (scope-element ag)
-                                  query-expression (scope-element (r/parent query-specification))
-                                  named-join-columns (for [identifier (named-columns-join-columns (r/parent ag))]
-                                                       {:identifier identifier})
-                                  column-references (all-column-references query-expression)]
-                              (->> (for [{:keys [identifiers] column-table-id :table-id} column-references
-                                         :when (= table-id column-table-id)]
-                                     {:identifier (last identifiers)})
-                                   (concat named-join-columns)
-                                   (distinct)))))]
-        [(reduce
-          (fn [acc {:keys [identifier index]}]
-            (conj acc (cond-> (with-meta {:index (count acc)} {:table table})
-                        identifier (assoc :identifier identifier)
-                        (and index (nil? identifier)) (assoc :original-index index)
-                        correlation-name (assoc :qualified-column [correlation-name identifier]))))
-          []
-          projections)]))
+           :table_primary
+           (when-not (r/ctor? :qualified_join (r/$ ag 1))
+             (let [{:keys [correlation-name derived-columns], table-id :id, :as table} (table ag)
+                   projections (if-let [derived-columns (not-empty derived-columns)]
+                                 (for [identifier derived-columns]
+                                   {:identifier identifier})
+                                 (if-let [subquery-ref (:subquery-ref (meta table))]
+                                   (first (projected-columns subquery-ref))
+                                   (let [query-specification (scope-element ag)
+                                         query-expression (scope-element (r/parent query-specification))
+                                         named-join-columns (for [identifier (named-columns-join-columns (r/parent ag))]
+                                                              {:identifier identifier})
+                                         column-references (all-column-references query-expression)]
+                                     (->> (for [{:keys [identifiers] column-table-id :table-id} column-references
+                                                :when (= table-id column-table-id)]
+                                            {:identifier (last identifiers)})
+                                          (concat named-join-columns)
+                                          (distinct)))))]
+               [(reduce
+                 (fn [acc {:keys [identifier index]}]
+                   (conj acc (cond-> (with-meta {:index (count acc)} {:table table})
+                               identifier (assoc :identifier identifier)
+                               (and index (nil? identifier)) (assoc :original-index index)
+                               correlation-name (assoc :qualified-column [correlation-name identifier]))))
+                 []
+                 projections)]))
 
-    :query_specification
-    (letfn [(expand-asterisk [ag]
+           :query_specification
+           (letfn [(expand-asterisk [ag]
+                     (r/zcase ag
+                              :table_primary
+                              (let [projections (if (r/ctor? :qualified_join (r/$ ag 1))
+                                                  (r/collect-stop expand-asterisk (r/$ ag 1))
+                                                  (first (projected-columns ag)))
+                                    {:keys [grouping-columns]} (local-env (group-env ag))]
+                                (if grouping-columns
+                                  (let [grouping-columns (set grouping-columns)]
+                                    (for [{:keys [qualified-column] :as projection} projections
+                                          :when (contains? grouping-columns qualified-column)]
+                                      projection))
+                                  projections))
+
+                              :subquery
+                              []
+
+                              nil))
+
+                   (calculate-select-list [ag]
+                     (r/zcase ag
+                              :asterisk
+                              (let [table-expression (r/right (r/parent ag))]
+                                (r/collect-stop expand-asterisk table-expression))
+
+                              :qualified_asterisk
+                              (let [identifiers (identifiers (r/$ ag 1))
+                                    table-expression (r/right (r/parent ag))]
+                                (for [{:keys [qualified-column] :as projection} (r/collect-stop expand-asterisk table-expression)
+                                      :when (= identifiers (butlast qualified-column))]
+                                  projection))
+
+                              :derived_column
+                              (let [identifier (identifier ag)
+                                    qualified-column (when (r/ctor? :column_reference (r/$ ag 1))
+                                                       (identifiers (r/$ ag 1)))]
+                                [(with-meta
+                                   (cond-> {:normal-form (r/node (r/$ ag 1))}
+                                     identifier (assoc :identifier identifier)
+                                     qualified-column (assoc :qualified-column qualified-column))
+                                   {:ref ag})])
+
+                              nil))]
+             (let [sl (r/$ ag -2)]
+               [(reduce
+                 (fn [acc projection]
+                   (conj acc (assoc projection :index (count acc))))
+                 []
+                 (r/collect-stop calculate-select-list sl))]))
+
+           :query_expression
+           (let [query-expression-body (if (r/ctor? :with_clause (r/$ ag 1))
+                                         (r/$ ag 2)
+                                         (r/$ ag 1))
+                 keys-to-keep (if (r/ctor? :query_specification query-expression-body)
+                                [:identifier :index :normal-form]
+                                [:identifier :index])]
+             (vec (for [projections (projected-columns query-expression-body)]
+                    (vec (for [projection projections]
+                           (select-keys projection keys-to-keep))))))
+
+           :target_table
+           [(let [{:keys [correlation-name], table-id :id, :as table} (table ag)
+                  column-references (all-column-references (r/parent ag))]
+              (->> (concat (for [{:keys [identifiers], column-table-id :table-id} column-references
+                                 :when (= table-id column-table-id)
+                                 :let [identifier (last identifiers)]]
+                             {:identifier identifier
+                              :qualified-column [correlation-name identifier]})
+                           (for [col-name ["_iid" "_row-id"
+                                           "xt__valid_from" "xt__valid_to"
+                                           "system_time_start" "system_time_end"]]
+                             {:identifier col-name
+                              :qualified-column [correlation-name col-name]}))
+                   (into [] (comp (distinct)
+                                  (map #(vary-meta % assoc :table table))))))]
+
+           :insert_statement
+           (projected-columns (r/$ ag -1))
+
+           :from_subquery
+           (r/zmatch ag
+                     [:from_subquery ^:z query-expression]
+                     (projected-columns query-expression)
+
+                     [:from_subquery ^:z column-name-list _qe]
+                     (projected-columns column-name-list))
+
+           :column_name_list
+           [(vec (for [ident (identifiers ag)]
+                   {:identifier ident}))]
+
+           (:update_statement__searched :delete_statement__searched)
+           [(let [{:keys [correlation-name], :as table} (table ag)]
+              (vec
+               (concat (->> (for [col-name ["_iid" "_row-id"
+                                            "xt__valid_from" "xt__valid_to"
+                                            "system_time_start" "system_time_end"]]
+                              {:identifier col-name
+                               :qualified-column [correlation-name col-name]})
+                            (into [] (map #(vary-meta % assoc :table table))))
+                       (some->> (r/find-first (partial r/ctor? :set_clause_list) ag)
+                                (r/collect-stop
+                                 (fn [ag]
+                                   (r/zmatch ag
+                                             [:set_clause [:update_target ^:z id] _ ^:z us]
+                                             [(-> {:identifier (identifier id)}
+                                                  (vary-meta assoc :ref us))])))))))]
+
+           :erase_statement__searched
+           [(let [{:keys [correlation-name], :as table} (table ag)]
+              (->> (for [col-name ["_iid" "_row-id"
+                                   "xt__valid_from" "xt__valid_to"
+                                   "system_time_start" "system_time_end"]]
+                     {:identifier col-name
+                      :qualified-column [correlation-name col-name]})
+                   (into [] (map #(vary-meta % assoc :table table)))))]
+
+           :collection_derived_table
+           (if (= "ORDINALITY" (r/lexeme ag -1))
+             [[{:index 0} {:index 1}]]
+             [[{:index 0}]])
+
+           :table_value_constructor
+           (projected-columns (r/$ ag 2))
+
+           (:row_value_expression_list :contextually_typed_row_value_expression_list :in_value_list)
+           (r/collect-stop
+            (fn [ag]
               (r/zcase ag
-                :table_primary
-                (let [projections (if (r/ctor? :qualified_join (r/$ ag 1))
-                                    (r/collect-stop expand-asterisk (r/$ ag 1))
-                                    (first (projected-columns ag)))
-                      {:keys [grouping-columns]} (local-env (group-env ag))]
-                  (if grouping-columns
-                    (let [grouping-columns (set grouping-columns)]
-                      (for [{:keys [qualified-column] :as projection} projections
-                            :when (contains? grouping-columns qualified-column)]
-                        projection))
-                    projections))
+                       (:row_value_expression_list
+                        :contextually_typed_row_value_expression_list)
+                       nil
 
-                :subquery
-                []
+                       (:explicit_row_value_constructor
+                        :contextually_typed_row_value_constructor)
+                       (let [degree (r/collect-stop
+                                     (fn [ag]
+                                       (r/zcase ag
+                                                (:row_value_constructor_element
+                                                 :contextually_typed_row_value_constructor_element)
+                                                1
 
-                nil))
+                                                :subquery
+                                                0
 
-            (calculate-select-list [ag]
+                                                nil))
+                                     +
+                                     ag)]
+                         [(vec (for [n (range degree)]
+                                 {:index n}))])
+
+
+                       :subquery
+                       (projected-columns (r/$ ag 1))
+
+                       (when (r/ctor ag)
+                         [[{:index 0}]])))
+            ag)
+
+           (:query_expression_body
+            :query_term)
+           (r/collect-stop
+            (fn [ag]
               (r/zcase ag
-                :asterisk
-                (let [table-expression (r/right (r/parent ag))]
-                  (r/collect-stop expand-asterisk table-expression))
+                       (:query_specification
+                        :table_value_constructor)
+                       (projected-columns ag)
 
-                :qualified_asterisk
-                (let [identifiers (identifiers (r/$ ag 1))
-                      table-expression (r/right (r/parent ag))]
-                  (for [{:keys [qualified-column] :as projection} (r/collect-stop expand-asterisk table-expression)
-                        :when (= identifiers (butlast qualified-column))]
-                    projection))
+                       :subquery
+                       []
 
-                :derived_column
-                (let [identifier (identifier ag)
-                      qualified-column (when (r/ctor? :column_reference (r/$ ag 1))
-                                         (identifiers (r/$ ag 1)))]
-                  [(with-meta
-                     (cond-> {:normal-form (r/node (r/$ ag 1))}
-                       identifier (assoc :identifier identifier)
-                       qualified-column (assoc :qualified-column qualified-column))
-                     {:ref ag})])
+                       nil))
+            ag)
 
-                nil))]
-      (let [sl (r/$ ag -2)]
-        [(reduce
-          (fn [acc projection]
-            (conj acc (assoc projection :index (count acc))))
-          []
-          (r/collect-stop calculate-select-list sl))]))
+           :subquery
+           (projected-columns (r/$ ag 1))
 
-    :query_expression
-    (let [query-expression-body (if (r/ctor? :with_clause (r/$ ag 1))
-                                  (r/$ ag 2)
-                                  (r/$ ag 1))
-          keys-to-keep (if (r/ctor? :query_specification query-expression-body)
-                         [:identifier :index :normal-form]
-                         [:identifier :index])]
-      (vec (for [projections (projected-columns query-expression-body)]
-             (vec (for [projection projections]
-                    (select-keys projection keys-to-keep))))))
-
-    :target_table
-    [(let [{:keys [correlation-name], table-id :id, :as table} (table ag)
-           column-references (all-column-references (r/parent ag))]
-       (->> (concat (for [{:keys [identifiers], column-table-id :table-id} column-references
-                          :when (= table-id column-table-id)
-                          :let [identifier (last identifiers)]]
-                      {:identifier identifier
-                       :qualified-column [correlation-name identifier]})
-                    (for [col-name ["_iid" "_row-id"
-                                    "application_time_start" "application_time_end"
-                                    "system_time_start" "system_time_end"]]
-                      {:identifier col-name
-                       :qualified-column [correlation-name col-name]}))
-            (into [] (comp (distinct)
-                           (map #(vary-meta % assoc :table table))))))]
-
-    :insert_statement
-    (projected-columns (r/$ ag -1))
-
-    :from_subquery
-    (r/zmatch ag
-      [:from_subquery ^:z query-expression]
-      (projected-columns query-expression)
-
-      [:from_subquery ^:z column-name-list _qe]
-      (projected-columns column-name-list))
-
-    :column_name_list
-    [(vec (for [ident (identifiers ag)]
-            {:identifier ident}))]
-
-    (:update_statement__searched :delete_statement__searched)
-    [(let [{:keys [correlation-name], :as table} (table ag)]
-       (vec
-        (concat (->> (for [col-name ["_iid" "_row-id"
-                                     "application_time_start" "application_time_end"
-                                     "system_time_start" "system_time_end"]]
-                       {:identifier col-name
-                        :qualified-column [correlation-name col-name]})
-                     (into [] (map #(vary-meta % assoc :table table))))
-                (some->> (r/find-first (partial r/ctor? :set_clause_list) ag)
-                         (r/collect-stop
-                          (fn [ag]
-                            (r/zmatch ag
-                              [:set_clause [:update_target ^:z id] _ ^:z us]
-                              [(-> {:identifier (identifier id)}
-                                   (vary-meta assoc :ref us))])))))))]
-
-    :erase_statement__searched
-    [(let [{:keys [correlation-name], :as table} (table ag)]
-       (->> (for [col-name ["_iid" "_row-id"
-                            "application_time_start" "application_time_end"
-                            "system_time_start" "system_time_end"]]
-              {:identifier col-name
-               :qualified-column [correlation-name col-name]})
-            (into [] (map #(vary-meta % assoc :table table)))))]
-
-    :collection_derived_table
-    (if (= "ORDINALITY" (r/lexeme ag -1))
-      [[{:index 0} {:index 1}]]
-      [[{:index 0}]])
-
-    :table_value_constructor
-    (projected-columns (r/$ ag 2))
-
-    (:row_value_expression_list :contextually_typed_row_value_expression_list :in_value_list)
-    (r/collect-stop
-     (fn [ag]
-       (r/zcase ag
-         (:row_value_expression_list
-          :contextually_typed_row_value_expression_list)
-         nil
-
-         (:explicit_row_value_constructor
-          :contextually_typed_row_value_constructor)
-         (let [degree (r/collect-stop
-                       (fn [ag]
-                         (r/zcase ag
-                           (:row_value_constructor_element
-                            :contextually_typed_row_value_constructor_element)
-                           1
-
-                           :subquery
-                           0
-
-                           nil))
-                       +
-                       ag)]
-           [(vec (for [n (range degree)]
-                   {:index n}))])
-
-
-         :subquery
-         (projected-columns (r/$ ag 1))
-
-         (when (r/ctor ag)
-           [[{:index 0}]])))
-     ag)
-
-    (:query_expression_body
-     :query_term)
-    (r/collect-stop
-     (fn [ag]
-       (r/zcase ag
-         (:query_specification
-          :table_value_constructor)
-         (projected-columns ag)
-
-         :subquery
-         []
-
-         nil))
-     ag)
-
-    :subquery
-    (projected-columns (r/$ ag 1))
-
-    ::r/inherit))
+           ::r/inherit))
 
 ;; Order by
 
@@ -1088,16 +1088,16 @@
 
 (defn- check-set-clause [ag]
   (r/zmatch ag
-    [:set_clause [:update_target ^:z id] _ _]
-    (concat (when (contains? #{"application_time_start" "application_time_end"} (identifier id))
-              [(format "Updating app-time columns outside of `FOR PERIOD OF` is not supported: %s %s"
-                       (->src-str ag)
-                       (->line-info-str ag))])
+            [:set_clause [:update_target ^:z id] _ _]
+            (concat (when (contains? #{"xt__valid_from" "xt__valid_to"} (identifier id))
+                      [(format "Updating app-time columns outside of `FOR PERIOD OF` is not supported: %s %s"
+                               (->src-str ag)
+                               (->line-info-str ag))])
 
-            (when (contains? #{"system_time_start" "system_time_end"} (identifier id))
-              [(format "Updating sys-time columns is not supported: %s %s"
-                       (->src-str ag)
-                       (->line-info-str ag))]))))
+                    (when (contains? #{"system_time_start" "system_time_end"} (identifier id))
+                      [(format "Updating sys-time columns is not supported: %s %s"
+                               (->src-str ag)
+                               (->line-info-str ag))]))))
 
 (defn errs [ag]
   (let [dml? (dml-statement? ag)]

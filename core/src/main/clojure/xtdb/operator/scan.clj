@@ -353,7 +353,7 @@
 
                     :all-time nil)))]
 
-        (apply-constraint for-app-time "application_time_start" "application_time_end")
+        (apply-constraint for-app-time "xt__valid_from" "xt__valid_to")
         (apply-constraint for-sys-time "system_time_start" "system_time_end"))
 
       (let [col-types (-> temporal/temporal-col-types (update-keys symbol))

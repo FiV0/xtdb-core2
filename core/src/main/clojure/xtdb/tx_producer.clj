@@ -98,14 +98,14 @@
 
                  (types/->field "put" types/struct-type false
                                 (types/->field "document" types/dense-union-type false)
-                                (types/col-type->field 'application_time_start nullable-inst-type)
-                                (types/col-type->field 'application_time_end nullable-inst-type))
+                                (types/col-type->field 'xt__valid_from nullable-inst-type)
+                                (types/col-type->field 'xt__valid_to nullable-inst-type))
 
                  (types/->field "delete" types/struct-type false
                                 (types/col-type->field 'table :utf8)
                                 (types/->field "xt__id" types/dense-union-type false)
-                                (types/col-type->field 'application_time_start nullable-inst-type)
-                                (types/col-type->field 'application_time_end nullable-inst-type))
+                                (types/col-type->field 'xt__valid_from nullable-inst-type)
+                                (types/col-type->field 'xt__valid_to nullable-inst-type))
 
                  (types/->field "evict" types/struct-type false
                                 (types/col-type->field '_table [:union #{:null :utf8}])
@@ -166,8 +166,8 @@
 (defn- ->put-writer [^IDenseUnionWriter tx-ops-writer]
   (let [put-writer (.asStruct (.writerForTypeId tx-ops-writer 1))
         doc-writer (.asDenseUnion (.writerForName put-writer "document"))
-        app-time-start-writer (.writerForName put-writer "application_time_start")
-        app-time-end-writer (.writerForName put-writer "application_time_end")
+        app-time-start-writer (.writerForName put-writer "xt__valid_from")
+        app-time-end-writer (.writerForName put-writer "xt__valid_to")
         table-doc-writers (HashMap.)]
     (fn write-put! [{:keys [doc table], {:keys [app-time-start app-time-end]} :app-time-opts}]
       (.startValue put-writer)
@@ -176,9 +176,9 @@
       (let [^IVectorWriter
             table-doc-writer (.computeIfAbsent table-doc-writers table
                                                (util/->jfn
-                                                 (fn [table]
-                                                   (let [type-id (.registerNewType doc-writer (types/col-type->field table [:struct {}]))]
-                                                     (.writerForTypeId doc-writer type-id)))))]
+                                                (fn [table]
+                                                  (let [type-id (.registerNewType doc-writer (types/col-type->field table [:struct {}]))]
+                                                    (.writerForTypeId doc-writer type-id)))))]
         (.startValue table-doc-writer)
         (types/write-value! doc table-doc-writer)
         (.endValue table-doc-writer))
@@ -192,8 +192,8 @@
   (let [delete-writer (.asStruct (.writerForTypeId tx-ops-writer 2))
         table-writer (.writerForName delete-writer "table")
         id-writer (.asDenseUnion (.writerForName delete-writer "xt__id"))
-        app-time-start-writer (.writerForName delete-writer "application_time_start")
-        app-time-end-writer (.writerForName delete-writer "application_time_end")]
+        app-time-start-writer (.writerForName delete-writer "xt__valid_from")
+        app-time-end-writer (.writerForName delete-writer "xt__valid_to")]
     (fn write-delete! [{:keys [id table],
                         {:keys [app-time-start app-time-end]} :app-time-opts}]
       (.startValue delete-writer)

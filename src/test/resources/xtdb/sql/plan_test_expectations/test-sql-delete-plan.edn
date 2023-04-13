@@ -5,8 +5,8 @@
    x3 _row-id,
    x6 system_time_start,
    x7 system_time_end,
-   x9 application_time_start,
-   x10 application_time_end}
+   x9 xt__valid_from,
+   x10 xt__valid_to}
   [:project
    [x2
     x3
@@ -18,8 +18,8 @@
     {id x1,
      _iid x2,
      _row-id x3,
-     application_time_start x4,
-     application_time_end x5,
+     xt__valid_from x4,
+     xt__valid_to x5,
      system_time_start x6,
      system_time_end x7}
     [:scan
@@ -29,7 +29,7 @@
      [{id (= id ?_0)}
       _iid
       _row-id
-      application_time_start
-      application_time_end
+      xt__valid_from
+      xt__valid_to
       system_time_start
       system_time_end]]]]]]

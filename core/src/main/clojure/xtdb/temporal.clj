@@ -138,7 +138,7 @@
 (def temporal-col-types
   {"_iid" :i64, "_row-id" :i64
    "system_time_start" types/temporal-col-type, "system_time_end" types/temporal-col-type
-   "application_time_start" types/temporal-col-type, "application_time_end" types/temporal-col-type})
+   "xt__valid_from" types/temporal-col-type, "xt__valid_to" types/temporal-col-type})
 
 (defn temporal-column? [col-name]
   (contains? temporal-col-types (name col-name)))
@@ -152,8 +152,8 @@
 
 (def ^:private column->idx {"_iid" id-idx
                             "_row-id" row-id-idx
-                            "application_time_start" app-time-start-idx
-                            "application_time_end" app-time-end-idx
+                            "xt__valid_from" app-time-start-idx
+                            "xt__valid_to" app-time-end-idx
                             "system_time_start" sys-time-start-idx
                             "system_time_end" sys-time-end-idx})
 

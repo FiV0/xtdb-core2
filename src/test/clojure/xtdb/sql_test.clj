@@ -941,9 +941,9 @@
   (t/is
    (=plan-file
     "multiple-references-to-temporal-cols"
-    (plan-sql "SELECT foo.application_time_start, foo.application_time_end, foo.system_time_start, foo.system_time_end
+    (plan-sql "SELECT foo.xt__valid_from, foo.xt__valid_to, foo.system_time_start, foo.system_time_end
                 FROM foo FOR SYSTEM_TIME FROM DATE '2001-01-01' TO DATE '2002-01-01'
-                WHERE foo.application_time_start = 4 AND foo.application_time_end > 10
+                WHERE foo.xt__valid_from = 4 AND foo.xt__valid_to > 10
                 AND foo.system_time_start = 20 AND foo.system_time_end <= 23
                 AND foo.APP_TIME OVERLAPS PERIOD (DATE '2000-01-01', DATE '2004-01-01')"))))
 
@@ -951,26 +951,26 @@
   (t/is (= '[:insert
              {:table "users"}
              [:rename
-              {x1 xt__id, x2 name, x5 application_time_start}
+              {x1 xt__id, x2 name, x5 xt__valid_from}
               [:project
                [x1 x2 {x5 (cast-tstz x3)}]
                [:table [x1 x2 x3] [{x1 ?_0, x2 ?_1, x3 ?_2}]]]]]
-           (plan-sql "INSERT INTO users (xt__id, name, application_time_start) VALUES (?, ?, ?)")
+           (plan-sql "INSERT INTO users (xt__id, name, xt__valid_from) VALUES (?, ?, ?)")
            (plan-sql
             "INSERT INTO users
-             SELECT bar.xt__id, bar.name, bar.application_time_start
-             FROM (VALUES (?, ?, ?)) AS bar(xt__id, name, application_time_start)")
+             SELECT bar.xt__id, bar.name, bar.xt__valid_from
+             FROM (VALUES (?, ?, ?)) AS bar(xt__id, name, xt__valid_from)")
            (plan-sql
-            "INSERT INTO users (xt__id, name, application_time_start)
-             SELECT bar.xt__id, bar.name, bar.application_time_start
-             FROM (VALUES (?, ?, ?)) AS bar(xt__id, name, application_time_start)")))
+            "INSERT INTO users (xt__id, name, xt__valid_from)
+             SELECT bar.xt__id, bar.name, bar.xt__valid_from
+             FROM (VALUES (?, ?, ?)) AS bar(xt__id, name, xt__valid_from)")))
 
   (t/is (=plan-file "test-sql-insert-plan-309"
                     (plan-sql "INSERT INTO customer (xt__id, c_custkey, c_name, c_address, c_nationkey, c_phone, c_acctbal, c_mktsegment, c_comment) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"))
         "#309")
 
   (t/is (=plan-file "test-sql-insert-plan-398"
-                    (plan-sql "INSERT INTO foo (xt__id, application_time_start) VALUES ('foo', DATE '2018-01-01')"))))
+                    (plan-sql "INSERT INTO foo (xt__id, xt__valid_from) VALUES ('foo', DATE '2018-01-01')"))))
 
 (deftest test-sql-delete-plan
   (t/is (=plan-file "test-sql-delete-plan"
@@ -1073,7 +1073,7 @@
       (plan-sql
         "SELECT f.APP_TIME OVERLAPS f.SYSTEM_TIME
         FROM foo
-        AS f (system_time_start, system_time_end, application_time_start, application_time_end)")))
+        AS f (system_time_start, system_time_end, xt__valid_from, xt__valid_to)")))
 
   (t/is
     (=plan-file
@@ -1132,7 +1132,7 @@
   (t/is
    (=plan-file
     "test-period-specs-with-dml-subqueries-and-defaults-407" ;;also #424
-    (plan-sql "INSERT INTO prop_owner (xt__id, customer_number, property_number, application_time_start, application_time_end)
+    (plan-sql "INSERT INTO prop_owner (xt__id, customer_number, property_number, xt__valid_from, xt__valid_to)
                 SELECT 1,
                 145,
                 7797, DATE '1998-01-03', tmp.app_start
